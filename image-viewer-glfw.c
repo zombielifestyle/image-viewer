@@ -1,9 +1,10 @@
-#include <stdio.h>
-#include <stb/stb_image.h>
+#include "glad/glad.h"
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
+#include <stdio.h>
 
-GLFWwindow* window;
 struct State {
     float projection[16];
 
@@ -17,6 +18,12 @@ struct State {
     int isDragging;
     int isDirty;
     int isZoom;
+
+    int projLoc;
+    unsigned int VAO;
+    unsigned int texture;
+    unsigned int shaderProgram;
+    GLFWwindow* window;
 } state;
 
 static void error_callback(int error, const char* description) {
@@ -62,29 +69,39 @@ static void window_size_callback(GLFWwindow* window, int width, int height) {
     state.isDirty = 1;
     state.windowWidth = width;
     state.windowHeight = height;
-    int fbwidth, fbheight;
-    glfwGetFramebufferSize(window, &fbwidth, &fbheight);
-    glViewport(0, 0, fbwidth, fbheight);
+    int w, h;
+    glfwGetFramebufferSize(window, &w, &h);
+    glViewport(0, 0, w, h);
 }
 
 static int init_glfw() {
     glfwSetErrorCallback(error_callback);
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+    // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
     if (!glfwInit())
         return -1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    window = glfwCreateWindow(state.windowWidth, state.windowHeight, "Image Viewer", NULL, NULL);
-    if (!window) {
+    state.window = glfwCreateWindow(state.windowWidth, state.windowHeight, "Image Viewer", NULL, NULL);
+    if (!state.window) {
         glfwTerminate();
         return 0;
     }
+    glfwMakeContextCurrent(state.window);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        printf("Failed to initialize GLAD\n");
+        return 0;
+    }
+    printf("gl version: %s\n", glGetString(GL_VERSION));
+    printf("renderer: %s\n", glGetString(GL_RENDERER));
     // glfwSetCursorPosCallback(window, cursor_position_callback);
-    glfwSetMouseButtonCallback(window, mouse_button_callback);
-    glfwSetKeyCallback(window, key_callback);
-    glfwSetWindowSizeCallback(window, window_size_callback);
-    glfwMakeContextCurrent(window);
+    // glfwSetWindowRefreshCallback(window, window_refresh_callback);
+    glfwSetMouseButtonCallback(state.window, mouse_button_callback);
+    glfwSetKeyCallback(state.window, key_callback);
+    glfwSetWindowSizeCallback(state.window, window_size_callback);
     glfwSwapInterval(1);
     // glEnable(GL_FRAMEBUFFER_SRGB);
     // glEnable(GL_BLEND);
@@ -272,29 +289,29 @@ int main(int argc, char** argv) {
     if (!init_glfw())
         return 2;
 
-    unsigned int texture = init_image_texture(filename);
-    if (!texture) {
+    state.texture = init_image_texture(filename);
+    if (!state.texture) {
         return 3;
     }
-    unsigned int shaderProgram = init_shaders();
-    if (!shaderProgram)
+    state.shaderProgram = init_shaders();
+    if (!state.shaderProgram)
         return 4;
-    unsigned int VAO = init_vao();
-    int projLoc = glGetUniformLocation(shaderProgram, "uProjection");
 
-    while (!glfwWindowShouldClose(window)) {
+    state.VAO = init_vao();
+    state.projLoc = glGetUniformLocation(state.shaderProgram, "uProjection");
+
+    while (!glfwWindowShouldClose(state.window)) {
         if (state.isDirty) {
             state.isDirty = 0;
             update_mouse_dragging();
             update_projection();
-            glColor4f(1,1,1,1);
             glClear(GL_COLOR_BUFFER_BIT);
-            glBindTexture(GL_TEXTURE_2D, texture);
-            glUseProgram(shaderProgram);
-            glBindVertexArray(VAO);
-            glUniformMatrix4fv(projLoc, 1, GL_FALSE, state.projection);
+            glBindTexture(GL_TEXTURE_2D, state.texture);
+            glUseProgram(state.shaderProgram);
+            glBindVertexArray(state.VAO);
+            glUniformMatrix4fv(state.projLoc, 1, GL_FALSE, state.projection);
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-            glfwSwapBuffers(window);
+            glfwSwapBuffers(state.window);
         }
 
         // glfwPollEvents();
