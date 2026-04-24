@@ -29,8 +29,8 @@ raylib:
 	$(BIN) -o image-viewer image-viewer-raylib.c -I/usr/local/include -lraylib -lm 
 
 run: clean all
-# 	$(RUNENV) ./image-viewer images/architecture.jpg
-	$(RUNENV) ./image-viewer images/lost-place.jpg
+	$(RUNENV) ./image-viewer images/architecture.jpg
+# 	$(RUNENV) ./image-viewer images/lost-place.jpg
 
 clean:
 	rm -f ./image-viewer
