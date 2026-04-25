@@ -9,6 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <time.h>
 
 #define len(x)  (sizeof(x) / sizeof((x)[0]))
 
@@ -38,6 +39,7 @@ int useStb = 0;
 int projLoc;
 int timeLoc;
 int flipYLoc;
+clock_t time_req;
 
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -92,6 +94,27 @@ static void window_size_callback(GLFWwindow* window, int width, int height) {
     glfwGetFramebufferSize(window, &w, &h);
     glViewport(0, 0, w, h);
 }
+GLenum glCheckError_(const char *file, int line)
+{
+    GLenum errorCode;
+    while ((errorCode = glGetError()) != GL_NO_ERROR)
+    {
+        const char* error;
+        switch (errorCode)
+        {
+            case GL_INVALID_ENUM:                  error = "INVALID_ENUM"; break;
+            case GL_INVALID_VALUE:                 error = "INVALID_VALUE"; break;
+            case GL_INVALID_OPERATION:             error = "INVALID_OPERATION"; break;
+            // case GL_STACK_OVERFLOW:                error = "STACK_OVERFLOW"; break;
+            // case GL_STACK_UNDERFLOW:               error = "STACK_UNDERFLOW"; break;
+            case GL_OUT_OF_MEMORY:                 error = "OUT_OF_MEMORY"; break;
+            case GL_INVALID_FRAMEBUFFER_OPERATION: error = "INVALID_FRAMEBUFFER_OPERATION"; break;
+        }
+        printf("GLERROR:%d: %s\n", line, error);
+    }
+    return errorCode;
+}
+#define glCheckError() glCheckError_(__FILE__, __LINE__)
 
 static int init_glfw() {
     glfwSetErrorCallback(error_callback);
@@ -103,6 +126,7 @@ static int init_glfw() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    // glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 
     state.window = glfwCreateWindow(state.windowWidth, state.windowHeight, "Image Viewer", NULL, NULL);
     if (!state.window) {
@@ -283,9 +307,15 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
     printf("file: %s size: %ld;; \n", filename, size);
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
+    printf("TJ Version: %d\n", TURBOJPEG_VERSION_NUMBER);
     tj3Set(tjh, TJPARAM_STOPONWARNING, stopOnWarning);
-    tj3Set(tjh, TJPARAM_SCANLIMIT, 0);
-    tj3Set(tjh, TJPARAM_MAXMEMORY, 64);
+    tj3Set(tjh, TJPARAM_NOREALLOC, 1);
+    tj3Set(tjh, TJPARAM_MAXMEMORY, 0);
+    // tj3Set(tjh, TJPARAM_SCANLIMIT, 0);
+    tj3Set(tjh, TJPARAM_FASTDCT  , 1);
+    // tj3Set(tjh, TJPARAM_FASTUPSAMPLE, 1);
+    // tjscalingfactor scalingFactor = TJUNSCALED;
+    // tjscalingfactor scalingFactor = {1,1};
 
     srcBuf = (unsigned char *)malloc(size);
     if (srcBuf == NULL) {
@@ -293,10 +323,12 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
         goto cleanup;
     }
 
+    time_req = clock();
     if (fread(srcBuf, size, 1, fh) < 1) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
         goto cleanup;
     }
+    printf("IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
     fclose(fh);
     fh = NULL;
 
@@ -318,17 +350,27 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
         precision = jpegPrecision;
 
     sampleSize = (precision <= 8 ? 1 : 2);
-    pixelFormat = TJPF_RGBA;
+    pixelFormat = TJPF_RGB;
     printf("size w:%d, h:%d, prec: %d\n", w, h, precision);
 
-    *dstBuf = (unsigned char *)malloc(
-        w * h * tjPixelSize[pixelFormat] * sampleSize
-    );
+    // if (tj3SetScalingFactor(tjh, scalingFactor) < 0) {
+    //     fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+    //     goto cleanup;
+    // }
+    // w = TJSCALED(w, scalingFactor);
+    // h = TJSCALED(h, scalingFactor);
+
     if (*dstBuf == NULL) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        goto cleanup;
+        *dstBuf = (unsigned char *)malloc(
+            w * h * tjPixelSize[pixelFormat] * sampleSize
+        );
+        if (*dstBuf == NULL) {
+            fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+            goto cleanup;
+        }
     }
 
+    time_req = clock();
     if (precision <= 8) {
       ret = tj3Decompress8 (tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
     } else if (precision <= 12) {
@@ -336,6 +378,7 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
     } else {
       ret = tj3Decompress16(tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
     }
+    printf("> IMAGE DEC: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
     if (ret < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         ret = -1;
@@ -366,6 +409,62 @@ static unsigned int read_stb_image_into(const char* filename, void **dstBuf, int
 }
 
 static unsigned int init_image_texture(const char* filename) {
+    GLuint pbo;
+    unsigned int texture;
+
+    time_req = clock();
+    glGenBuffers(1, &pbo);
+    glCheckError();
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glCheckError();
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 3, NULL, GL_STREAM_DRAW);
+    glCheckError();
+    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    // glCheckError();
+    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    // glCheckError();
+    // glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW);
+    // glCheckError();
+    printf("> PBO SETUP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+
+    time_req = clock();
+    void* ptr = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
+    glCheckError();
+    printf("> PBO MAP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+
+    read_jpeg_into(filename, &ptr, &state.imageWidth, &state.imageHeight);
+    // if (useStb) {
+    //     read_stb_image_into(filename, &ptr, &state.imageWidth, &state.imageHeight);
+    // }
+    time_req = clock();
+    glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+    glCheckError();
+    printf("> PBO UNMAP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+
+    time_req = clock();
+    glGenTextures(1, &texture);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glCheckError();
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glCheckError();
+    glTexImage2D(GL_TEXTURE_2D,
+        0, GL_RGB8, state.imageWidth, state.imageHeight,
+        0, GL_RGB, GL_UNSIGNED_BYTE, NULL
+    );
+    glCheckError();
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glCheckError();
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glCheckError();
+    printf("> PBO TEX: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+
+    return texture;
+}
+
+static unsigned int init_image_texture2(const char* filename) {
     void *dstBuf = NULL;
     unsigned int texture;
 
@@ -379,27 +478,33 @@ static unsigned int init_image_texture(const char* filename) {
         }
     }
 
-    // printf("width: %d, height: %d\n", state.imageWidth, state.imageHeight);
-    printf("CREATE BUFF\n");
-
+    time_req = clock();
     glGenTextures(1, &texture);
+    glCheckError();
+
     glBindTexture(GL_TEXTURE_2D, texture);
+    glCheckError();
+
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glCheckError();
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 
     // float maxAnisotropy = 0.0f;
     // glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
     // glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
 
-    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    printf("CREATE BUFF TEXT\n");
     // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, state.imageWidth,
-       state.imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, dstBuf);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    printf("CREATE BUFF END\n");
+    glTexImage2D(GL_TEXTURE_2D,
+        0, GL_RGB8, state.imageWidth, state.imageHeight,
+        0, GL_RGB, GL_UNSIGNED_BYTE, dstBuf
+    );
+    glCheckError();
 
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glCheckError();
+
+    printf("> NORM TEX: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
     free(dstBuf);
     return texture;
 }
@@ -508,21 +613,26 @@ int main(int argc, char** argv) {
     if (!state.texture) {
         return 3;
     }
-
+    time_req = clock();
     state.shaderIndex = 0;
     state.shaders[0] = load_default_shader();
     state.shaders[1] = load_wave_shader();
+    printf("> SHADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+
+    time_req = clock();
     state.VAO = init_vao();
     glBindVertexArray(state.VAO);
+    printf("> VAO: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
+    time_req = clock();
     glUseProgram(state.shaders[state.shaderIndex]);
     projLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uProjection");
     timeLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "seconds");
-        flipYLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uFlipY");
+    flipYLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uFlipY");
     glUniform1i(flipYLoc, 1);
-
     glBindTexture(GL_TEXTURE_2D, state.texture);
     // glfwWaitEventsTimeout(1);
+    printf("> FIN: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     while (!glfwWindowShouldClose(state.window)) {
         glClear(GL_COLOR_BUFFER_BIT);
