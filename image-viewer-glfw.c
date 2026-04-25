@@ -3,7 +3,12 @@
 #include <GLFW/glfw3.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
+#include <turbojpeg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 #define len(x)  (sizeof(x) / sizeof((x)[0]))
 
@@ -29,8 +34,10 @@ struct State {
     unsigned int shaders[2];
 } state;
 
+int useStb = 0;
 int projLoc;
 int timeLoc;
+int flipYLoc;
 
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -117,8 +124,8 @@ static int init_glfw() {
     glfwSwapInterval(1);
     // glEnable(GL_FRAMEBUFFER_SRGB);
     // glEnable(GL_BLEND);
-    // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     // glDisable(GL_BLEND);
+    // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     return 1;
 }
 
@@ -146,10 +153,12 @@ static unsigned int load_shader(const char* fsSource) {
         "\n"
         "out vec2 TexCoord;\n"
         "uniform mat4 uProjection;\n"
+        "uniform int uFlipY;"
         "\n"
         "void main() {\n"
         "    gl_Position = uProjection * vec4(aPos, 1.0);\n"
-        "    TexCoord = aTexCoord;\n"
+        "    TexCoord.x = aTexCoord.x;\n"
+        "    TexCoord.y = abs(uFlipY - aTexCoord.y);\n"
         "}\n";
     vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &vsSource, NULL);
@@ -237,16 +246,142 @@ static unsigned int load_default_shader() {
     return load_shader(fsSource);
 }
 
-static unsigned int init_image_texture(const char* filename) {
-    int channels;
-    unsigned int texture;
-    stbi_set_flip_vertically_on_load(1);
-    unsigned char *data = stbi_load(filename, &state.imageWidth, &state.imageHeight, &channels, 4);
-    if (!data) {
-        fprintf(stderr, "Error: Could not load image '%s'\n", filename);
-        fprintf(stderr, "Reason: %s\n", stbi_failure_reason());
+static FILE* open_file_handle(const char* filename, size_t *fileSize) {
+    long size = 0;
+    FILE* fh = NULL;
+    if ((fh = fopen(filename, "rb")) == NULL) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
         return 0;
     }
+    if (fseek(fh, 0, SEEK_END) < 0 || ((size = ftell(fh)) < 0) || fseek(fh, 0, SEEK_SET) < 0) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        fclose(fh);
+        return 0;
+    }
+    if (size == 0) {
+        fprintf(stderr, "ERROR:%d: file empty\n", __LINE__);
+        fclose(fh);
+        return 0;
+    }
+    *fileSize = size;
+    return fh;
+}
+
+static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *height) {
+    // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
+    int ret = -1, colorspace, jpegPrecision, lossless, w, h,
+        pixelFormat = TJPF_UNKNOWN, precision = -1, stopOnWarning = -1;
+    tjhandle tjh = NULL;
+    FILE *fh = NULL;
+    size_t size, sampleSize;
+    unsigned char *srcBuf = NULL;
+
+    fh = open_file_handle(filename, &size);
+    if (fh == NULL) {
+        return ret;
+    }
+    printf("file: %s size: %ld;; \n", filename, size);
+
+    tjh = tj3Init(TJINIT_DECOMPRESS);
+    tj3Set(tjh, TJPARAM_STOPONWARNING, stopOnWarning);
+    tj3Set(tjh, TJPARAM_SCANLIMIT, 0);
+    tj3Set(tjh, TJPARAM_MAXMEMORY, 64);
+
+    srcBuf = (unsigned char *)malloc(size);
+    if (srcBuf == NULL) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        goto cleanup;
+    }
+
+    if (fread(srcBuf, size, 1, fh) < 1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        goto cleanup;
+    }
+    fclose(fh);
+    fh = NULL;
+
+    if (tj3DecompressHeader(tjh, srcBuf, size) < 0) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+        goto cleanup;
+    }
+
+    w = tj3Get(tjh, TJPARAM_JPEGWIDTH);
+    h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
+    jpegPrecision = tj3Get(tjh, TJPARAM_PRECISION);
+    colorspace = tj3Get(tjh, TJPARAM_COLORSPACE);
+    if (colorspace == TJCS_CMYK || colorspace == TJCS_YCCK)
+      pixelFormat = TJPF_CMYK;
+    else
+      pixelFormat = TJPF_RGBA;
+
+    if (precision == -1 || lossless || jpegPrecision != 8)
+        precision = jpegPrecision;
+
+    sampleSize = (precision <= 8 ? 1 : 2);
+    pixelFormat = TJPF_RGBA;
+    printf("size w:%d, h:%d, prec: %d\n", w, h, precision);
+
+    *dstBuf = (unsigned char *)malloc(
+        w * h * tjPixelSize[pixelFormat] * sampleSize
+    );
+    if (*dstBuf == NULL) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        goto cleanup;
+    }
+
+    if (precision <= 8) {
+      ret = tj3Decompress8 (tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
+    } else if (precision <= 12) {
+      ret = tj3Decompress12(tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
+    } else {
+      ret = tj3Decompress16(tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
+    }
+    if (ret < 0) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+        ret = -1;
+        goto cleanup;
+    }
+    ret     = 0;
+    *width  = w;
+    *height = h;
+
+  cleanup:
+    tj3Free(srcBuf);
+    srcBuf = NULL;
+    tj3Destroy(tjh);
+    if (fh) fclose(fh);
+    return ret;
+}
+
+static unsigned int read_stb_image_into(const char* filename, void **dstBuf, int *width, int *height) {
+    int channels;
+    // stbi_set_flip_vertically_on_load(0);
+    *dstBuf = (unsigned char *)stbi_load(filename, &state.imageWidth, &state.imageHeight, &channels, 4);
+    if (!dstBuf) {
+        fprintf(stderr, "Error: Could not load image '%s'\n", filename);
+        fprintf(stderr, "Reason: %s\n", stbi_failure_reason());
+        return -1;
+    }
+    return 0;
+}
+
+static unsigned int init_image_texture(const char* filename) {
+    void *dstBuf = NULL;
+    unsigned int texture;
+
+    if (useStb) {
+        if (read_stb_image_into(filename, &dstBuf, &state.imageWidth, &state.imageHeight) < 0) {
+            return 0;
+        }
+    } else {
+        if (read_jpeg_into(filename, &dstBuf, &state.imageWidth, &state.imageHeight) < 0) {
+            return 0;
+        }
+    }
+
+    // printf("width: %d, height: %d\n", state.imageWidth, state.imageHeight);
+    printf("CREATE BUFF\n");
+
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -255,12 +390,17 @@ static unsigned int init_image_texture(const char* filename) {
     // glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
     // glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, state.imageWidth, state.imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    printf("CREATE BUFF TEXT\n");
+    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, state.imageWidth,
+       state.imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, dstBuf);
     glGenerateMipmap(GL_TEXTURE_2D);
-    stbi_image_free(data);
+    printf("CREATE BUFF END\n");
+
+    free(dstBuf);
     return texture;
 }
 
@@ -372,13 +512,15 @@ int main(int argc, char** argv) {
     state.shaderIndex = 0;
     state.shaders[0] = load_default_shader();
     state.shaders[1] = load_wave_shader();
-
     state.VAO = init_vao();
     glBindVertexArray(state.VAO);
 
     glUseProgram(state.shaders[state.shaderIndex]);
     projLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uProjection");
     timeLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "seconds");
+        flipYLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uFlipY");
+    glUniform1i(flipYLoc, 1);
+
     glBindTexture(GL_TEXTURE_2D, state.texture);
     // glfwWaitEventsTimeout(1);
 

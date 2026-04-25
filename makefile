@@ -3,16 +3,21 @@
 
 # RUNENV = GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 # RUNENV = MESA_LOADER_DRIVER_OVERRIDE=nvidia
-RUNENV =
+RUNENV  =
 LDFLAGS =
 BIN = cc -Wall
-
-CFLAGS = -Ilibs/stb
 CFLAGS += -Ilibs/glad/include
 
+# stb
+CFLAGS  += -Ilibs/stb
+
+# libjpeg-turbo
+LDFLAGS += libs/libjpeg-turbo/build/libturbojpeg.a
+CFLAGS  += -Ilibs/libjpeg-turbo/src
+
 # vendored
-RUNENV += MESA_LOADER_DRIVER_OVERRIDE=nvidia
-CFLAGS += -Ilibs/glfw/include
+RUNENV  += MESA_LOADER_DRIVER_OVERRIDE=nvidia
+CFLAGS  += -Ilibs/glfw/include
 LDFLAGS += ./libs/glfw/build/src/libglfw3.a
 LDFLAGS += -lm -lGL
 
