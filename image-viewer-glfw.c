@@ -22,6 +22,15 @@ typedef struct {
 Shader shaders[2];
 unsigned int shaderIndex = 0;
 
+typedef struct {
+    const char* fileName;
+    FILE* fileHandle;
+    long fileSize;
+    int width;
+    int height;
+    unsigned int textureId;
+} Image;
+
 struct State {
     float projection[16];
 
@@ -30,14 +39,12 @@ struct State {
     float  offsetX,    offsetY;
 
     int windowWidth, windowHeight;
-    int imageWidth,  imageHeight;
 
     int isDragging;
     int isDirty;
     int isZoom;
 
     unsigned int VAO;
-    unsigned int texture;
     GLFWwindow* window;
 
 } state;
@@ -88,8 +95,8 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
 }
 
 static void window_size_callback(GLFWwindow* window, int width, int height) {
-    state.isDirty = 1;
-    state.windowWidth = width;
+    state.isDirty      = 1;
+    state.windowWidth  = width;
     state.windowHeight = height;
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
@@ -235,26 +242,26 @@ static int shader_create_wave(Shader* s) {
     shader_create(s, fsSource);
     glUseProgram(s->id);
 
-    int freqXLoc = glGetUniformLocation(s->id, "freqX");
-    int freqYLoc = glGetUniformLocation(s->id, "freqY");
-    int ampXLoc = glGetUniformLocation(s->id, "ampX");
-    int ampYLoc = glGetUniformLocation(s->id, "ampY");
+    int freqXLoc  = glGetUniformLocation(s->id, "freqX");
+    int freqYLoc  = glGetUniformLocation(s->id, "freqY");
+    int ampXLoc   = glGetUniformLocation(s->id, "ampX");
+    int ampYLoc   = glGetUniformLocation(s->id, "ampY");
     int speedXLoc = glGetUniformLocation(s->id, "speedX");
     int speedYLoc = glGetUniformLocation(s->id, "speedY");
-    int sizeLoc = glGetUniformLocation(s->id, "size");
+    int sizeLoc  = glGetUniformLocation(s->id, "size");
 
-    float freqX = 25.0f;
-    float freqY = 25.0f;
-    float ampX = 5.0f;
-    float ampY = 5.0f;
+    float freqX  = 25.0f;
+    float freqY  = 25.0f;
+    float ampX   = 5.0f;
+    float ampY   = 5.0f;
     float speedX = 8.0f;
     float speedY = 8.0f;
 
-    glUniform2f(sizeLoc, (float)state.windowWidth, (float)state.windowHeight);
-    glUniform1f(freqXLoc, freqX);
-    glUniform1f(freqYLoc, freqY);
-    glUniform1f(ampXLoc, ampX);
-    glUniform1f(ampYLoc, ampY);
+    glUniform2f(sizeLoc,   (float)state.windowWidth, (float)state.windowHeight);
+    glUniform1f(freqXLoc,  freqX);
+    glUniform1f(freqYLoc,  freqY);
+    glUniform1f(ampXLoc,   ampX);
+    glUniform1f(ampYLoc,   ampY);
     glUniform1f(speedXLoc, speedX);
     glUniform1f(speedYLoc, speedY);
 
@@ -284,70 +291,67 @@ static int shader_create_default(Shader* s) {
     return 0;
 }
 
-static FILE* open_file_handle(const char* filename, size_t *fileSize) {
+static int image_open(Image* image) {
     long size = 0;
-    FILE* fh = NULL;
-    if ((fh = fopen(filename, "rb")) == NULL) {
+    image->fileHandle = NULL;
+    image->fileSize   = 0;
+    if ((image->fileHandle = fopen(image->fileName, "rb")) == NULL) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        return 0;
+        return -1;
     }
-    if (fseek(fh, 0, SEEK_END) < 0 || ((size = ftell(fh)) < 0) || fseek(fh, 0, SEEK_SET) < 0) {
+    if (fseek(image->fileHandle, 0, SEEK_END) < 0
+        || ((size = ftell(image->fileHandle)) < 0)
+        || fseek(image->fileHandle, 0, SEEK_SET) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        fclose(fh);
-        return 0;
+        fclose(image->fileHandle);
+        return -1;
     }
     if (size == 0) {
         fprintf(stderr, "ERROR:%d: file empty\n", __LINE__);
-        fclose(fh);
-        return 0;
+        fclose(image->fileHandle);
+        return -1;
     }
-    *fileSize = size;
-    return fh;
+    image->fileSize = size;
+    return 0;
 }
 
-static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *height) {
-    // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
+// https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
+static int image_read_jpeg_into(Image* image, void **dstBuf) {
     int ret = -1, colorspace, jpegPrecision, lossless, w, h,
-        pixelFormat = TJPF_UNKNOWN, precision = -1, stopOnWarning = -1;
+        pixelFormat = TJPF_UNKNOWN, precision = -1;
     tjhandle tjh = NULL;
-    FILE *fh = NULL;
-    size_t size, sampleSize;
     unsigned char *srcBuf = NULL;
 
-    fh = open_file_handle(filename, &size);
-    if (fh == NULL) {
+    if (image_open(image) < 0) {
         return ret;
     }
-    printf("file: %s size: %ld;; \n", filename, size);
+    printf("file: %s size: %ld;; \n", image->fileName, image->fileSize);
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
     printf("TJ Version: %d\n", TURBOJPEG_VERSION_NUMBER);
-    tj3Set(tjh, TJPARAM_STOPONWARNING, stopOnWarning);
-    tj3Set(tjh, TJPARAM_NOREALLOC, 1);
-    tj3Set(tjh, TJPARAM_MAXMEMORY, 0);
-    // tj3Set(tjh, TJPARAM_SCANLIMIT, 0);
-    tj3Set(tjh, TJPARAM_FASTDCT  , 1);
-    // tj3Set(tjh, TJPARAM_FASTUPSAMPLE, 1);
-    // tjscalingfactor scalingFactor = TJUNSCALED;
-    // tjscalingfactor scalingFactor = {1,1};
+    tj3Set(tjh, TJPARAM_STOPONWARNING, 1);
+    tj3Set(tjh, TJPARAM_NOREALLOC,     1);
+    tj3Set(tjh, TJPARAM_MAXMEMORY,     0);
+    tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
+    // tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
 
-    srcBuf = (unsigned char *)malloc(size);
+    time_req = clock();
+    srcBuf = (unsigned char *)malloc(image->fileSize);
     if (srcBuf == NULL) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
         goto cleanup;
     }
 
-    time_req = clock();
-    if (fread(srcBuf, size, 1, fh) < 1) {
+    if (fread(srcBuf, image->fileSize, 1, image->fileHandle) < 1) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
         goto cleanup;
     }
     printf("IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
-    fclose(fh);
-    fh = NULL;
+    fclose(image->fileHandle);
+    image->fileHandle = NULL;
 
     time_req = clock();
-    if (tj3DecompressHeader(tjh, srcBuf, size) < 0) {
+    if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         goto cleanup;
     }
@@ -365,10 +369,10 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
     if (precision == -1 || lossless || jpegPrecision != 8)
         precision = jpegPrecision;
 
-    sampleSize = (precision <= 8 ? 1 : 2);
     pixelFormat = TJPF_RGB;
-    printf("size w:%d, h:%d, prec: %d\n", w, h, precision);
 
+    // tjscalingfactor scalingFactor = TJUNSCALED;
+    // tjscalingfactor scalingFactor = {1,4};
     // if (tj3SetScalingFactor(tjh, scalingFactor) < 0) {
     //     fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
     //     goto cleanup;
@@ -376,23 +380,24 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
     // w = TJSCALED(w, scalingFactor);
     // h = TJSCALED(h, scalingFactor);
 
-    if (*dstBuf == NULL) {
-        *dstBuf = (unsigned char *)malloc(
-            w * h * tjPixelSize[pixelFormat] * sampleSize
-        );
-        if (*dstBuf == NULL) {
-            fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-            goto cleanup;
-        }
-    }
+    // sampleSize = (precision <= 8 ? 1 : 2);
+    // if (*dstBuf == NULL) {
+    //     *dstBuf = (unsigned char *)malloc(
+    //         w * h * tjPixelSize[pixelFormat] * sampleSize
+    //     );
+    //     if (*dstBuf == NULL) {
+    //         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+    //         goto cleanup;
+    //     }
+    // }
 
     time_req = clock();
     if (precision <= 8) {
-      ret = tj3Decompress8 (tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
+      ret = tj3Decompress8 (tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
     } else if (precision <= 12) {
-      ret = tj3Decompress12(tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
+      ret = tj3Decompress12(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
     } else {
-      ret = tj3Decompress16(tjh, srcBuf, size, *dstBuf, 0, pixelFormat);
+      ret = tj3Decompress16(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
     }
     printf("> IMAGE DEC: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
     if (ret < 0) {
@@ -400,31 +405,48 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
         ret = -1;
         goto cleanup;
     }
-    ret     = 0;
-    *width  = w;
-    *height = h;
+    ret           = 0;
+    image->width  = w;
+    image->height = h;
 
   cleanup:
     tj3Free(srcBuf);
     srcBuf = NULL;
     tj3Destroy(tjh);
-    if (fh) fclose(fh);
+    if (image->fileHandle) fclose(image->fileHandle);
     return ret;
 }
 
-static unsigned int read_stb_image_into(const char* filename, void **dstBuf, int *width, int *height) {
+static unsigned int image_read_stb_into(Image* image, void **dstBuf) {
     int channels;
-    // stbi_set_flip_vertically_on_load(0);
-    *dstBuf = (unsigned char *)stbi_load(filename, &state.imageWidth, &state.imageHeight, &channels, 4);
-    if (!dstBuf) {
-        fprintf(stderr, "Error: Could not load image '%s'\n", filename);
+    if (image_open(image) < 0) {
+        return -1;
+    }
+    unsigned char* srcBuf = (unsigned char *)malloc(image->fileSize);
+    if (srcBuf == NULL) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+    if (fread(srcBuf, image->fileSize, 1, image->fileHandle) < 1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+    fclose(image->fileHandle);
+    image->fileHandle = NULL;
+    printf(">> ptr %p ", (void*)dstBuf);
+    printf(">> ptr %p ", (void*)*dstBuf);
+    *dstBuf = (unsigned char *)stbi_load_from_memory(srcBuf, image->fileSize, &image->width, &image->height, &channels, 3);
+    if (!(*dstBuf)) {
+        fprintf(stderr, "Error: Could not load image '%s'\n", image->fileName);
         fprintf(stderr, "Reason: %s\n", stbi_failure_reason());
         return -1;
     }
+    printf(">> ptr %p ", (void*)dstBuf);
+    printf(">> ptr %p ", (void*)*dstBuf);
     return 0;
 }
 
-static unsigned int init_image_texture(const char* filename) {
+static int image_load_texture(Image* image) {
     GLuint pbo;
     unsigned int texture;
 
@@ -448,10 +470,19 @@ static unsigned int init_image_texture(const char* filename) {
     glCheckError();
     printf("> PBO MAP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
-    read_jpeg_into(filename, &ptr, &state.imageWidth, &state.imageHeight);
-    // if (useStb) {
-    //     read_stb_image_into(filename, &ptr, &state.imageWidth, &state.imageHeight);
-    // }
+    if (useStb) {
+        time_req = clock();
+        int ret = image_read_stb_into(image, &ptr);
+        printf("> IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+        if (ret < 0) {
+            return -1;
+        }
+    } else {
+        if (image_read_jpeg_into(image, &ptr) < 0)
+            return -1;
+    }
+    printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
+
     time_req = clock();
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
     glCheckError();
@@ -468,11 +499,12 @@ static unsigned int init_image_texture(const char* filename) {
     // float maxAnisotropy = 0.0f;
     // glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
     // glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
-    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
+    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glCheckError();
+
     glTexImage2D(GL_TEXTURE_2D,
-        0, GL_RGB8, state.imageWidth, state.imageHeight,
+        0, GL_RGB8, image->width, image->height,
         0, GL_RGB, GL_UNSIGNED_BYTE, NULL
     );
     glCheckError();
@@ -482,15 +514,16 @@ static unsigned int init_image_texture(const char* filename) {
     glCheckError();
     printf("> PBO TEX: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
-    return texture;
+    image->textureId = texture;
+    return 0;
 }
 
-static unsigned int init_vao() {
+static unsigned int init_vao(const Image* image) {
     float vertices[] = {
-        (float)state.imageWidth, (float)state.imageHeight, 0.0f,  1.0f, 1.0f,
-        (float)state.imageWidth, 0.0f,                     0.0f,  1.0f, 0.0f,
-        0.0f,                    0.0f,                     0.0f,  0.0f, 0.0f,
-        0.0f,                    (float)state.imageHeight, 0.0f,  0.0f, 1.0f
+        (float)image->width, (float)image->height, 0.0f,  1.0f, 1.0f,
+        (float)image->width, 0.0f,                 0.0f,  1.0f, 0.0f,
+        0.0f,                0.0f,                 0.0f,  0.0f, 0.0f,
+        0.0f,                (float)image->height, 0.0f,  0.0f, 1.0f
     };
     unsigned int indices[] = {
         0, 1, 3,
@@ -517,15 +550,15 @@ static unsigned int init_vao() {
     return VAO;
 }
 
-static void update_mouse_dragging() {
+static void update_mouse_dragging(const Image* image) {
     if (!state.isDragging)
         return;
     state.offsetX -= (float)(state.mouseX - state.lastMouseX);
     state.offsetY += (float)(state.mouseY - state.lastMouseY);
-    if (state.offsetX > state.imageWidth / 2.0f) state.offsetX = state.imageWidth / 2.0f;
-    if (state.offsetX < -state.imageWidth / 2.0f) state.offsetX = -state.imageWidth / 2.0f;
-    if (state.offsetY > state.imageHeight / 2.0f) state.offsetY = state.imageHeight / 2.0f;
-    if (state.offsetY < -state.imageHeight / 2.0f) state.offsetY = -state.imageHeight / 2.0f;
+    if (state.offsetX > image->width / 2.0f) state.offsetX = image->width / 2.0f;
+    if (state.offsetX < -image->width / 2.0f) state.offsetX = -image->width / 2.0f;
+    if (state.offsetY > image->height / 2.0f) state.offsetY = image->height / 2.0f;
+    if (state.offsetY < -image->height / 2.0f) state.offsetY = -image->height / 2.0f;
     state.lastMouseX = state.mouseX;
     state.lastMouseY = state.mouseY;
 }
@@ -540,12 +573,12 @@ static void get_ortho_matrix(float* m, float l, float r, float b, float t) {
     m[15] = 1.0f;
 }
 
-static void update_projection() {
+static void update_projection(const Image* image) {
     float left, right, bottom, top;
 
     if (state.isZoom) {
-        float centerX = (state.imageWidth / 2.0f) + state.offsetX;
-        float centerY = (state.imageHeight / 2.0f) + state.offsetY;
+        float centerX = (image->width / 2.0f) + state.offsetX;
+        float centerY = (image->height / 2.0f) + state.offsetY;
 
         left   = centerX - (state.windowWidth / 2.0f);
         right  = centerX + (state.windowWidth / 2.0f);
@@ -553,19 +586,19 @@ static void update_projection() {
         top    = centerY + (state.windowHeight / 2.0f);
     } else {
         float windowAspect = (float)state.windowWidth / (float)state.windowHeight;
-        float imageAspect = (float)state.imageWidth / (float)state.imageHeight;
+        float imageAspect = (float)image->width / (float)image->height;
         if (windowAspect > imageAspect) {
-            float worldWidth = state.imageHeight * windowAspect;
-            left = -(worldWidth - state.imageWidth) / 2.0f;
-            right = state.imageWidth + (worldWidth - state.imageWidth) / 2.0f;
+            float worldWidth = image->height * windowAspect;
+            left = -(worldWidth - image->width) / 2.0f;
+            right = image->width + (worldWidth - image->width) / 2.0f;
             bottom = 0.0f;
-            top = (float)state.imageHeight;
+            top = (float)image->height;
         } else {
-            float worldHeight = state.imageWidth / windowAspect;
+            float worldHeight = image->width / windowAspect;
             left = 0.0f;
-            right = (float)state.imageWidth;
-            bottom = -(worldHeight - state.imageHeight) / 2.0f;
-            top = state.imageHeight + (worldHeight - state.imageHeight) / 2.0f;
+            right = (float)image->width;
+            bottom = -(worldHeight - image->height) / 2.0f;
+            top = image->height + (worldHeight - image->height) / 2.0f;
         }
     }
     get_ortho_matrix(state.projection, left, right, bottom, top);
@@ -576,17 +609,17 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
         return 1;
     }
-    const char* filename = argv[1];
 
-    state.isDirty = 1;
-    state.windowWidth = 640;
+    state.isDirty      = 1;
+    state.windowWidth  = 640;
     state.windowHeight = 480;
 
     if (!init_glfw())
         return 2;
 
-    state.texture = init_image_texture(filename);
-    if (!state.texture) {
+    Image image = { .fileName = argv[1], .fileSize = 0 };
+    image_load_texture(&image);
+    if (!image.textureId) {
         return 3;
     }
     time_req = clock();
@@ -595,8 +628,8 @@ int main(int argc, char** argv) {
     printf("> SHADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     time_req = clock();
-    state.VAO = init_vao();
-    glBindVertexArray(state.VAO);
+    state.VAO = init_vao(&image);
+    // glBindVertexArray(state.VAO);
     printf("> VAO: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     time_req = clock();
@@ -604,7 +637,7 @@ int main(int argc, char** argv) {
     glUniform1i(shaders[0].flipy, 1);
     glUseProgram(shaders[1].id);
     glUniform1i(shaders[1].flipy, 1);
-    glBindTexture(GL_TEXTURE_2D, state.texture);
+    glBindTexture(GL_TEXTURE_2D, image.textureId);
     // glfwWaitEventsTimeout(1);
     printf("> FIN: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
@@ -614,8 +647,8 @@ int main(int argc, char** argv) {
 
         if (state.isDirty) {
             state.isDirty = 0;
-            update_mouse_dragging();
-            update_projection();
+            update_mouse_dragging(&image);
+            update_projection(&image);
             glUniformMatrix4fv(shaders[shaderIndex].projection, 1, GL_FALSE, state.projection);
         }
         if (shaderIndex && shaders[shaderIndex].time != -1)
