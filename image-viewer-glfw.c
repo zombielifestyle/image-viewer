@@ -13,6 +13,15 @@
 
 #define len(x)  (sizeof(x) / sizeof((x)[0]))
 
+typedef struct {
+    unsigned int id;
+    int projection;
+    int time;
+    int flipy;
+} Shader;
+Shader shaders[2];
+unsigned int shaderIndex = 0;
+
 struct State {
     float projection[16];
 
@@ -31,14 +40,9 @@ struct State {
     unsigned int texture;
     GLFWwindow* window;
 
-    unsigned int shaderIndex;
-    unsigned int shaders[2];
 } state;
 
 int useStb = 0;
-int projLoc;
-int timeLoc;
-int flipYLoc;
 clock_t time_req;
 
 static void error_callback(int error, const char* description) {
@@ -54,10 +58,7 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
     }
     if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         state.isDirty = 1;
-        state.shaderIndex = state.shaderIndex+1 >= len(state.shaders) ? 0 : state.shaderIndex + 1;
-        glUseProgram(state.shaders[state.shaderIndex]);
-        projLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uProjection");
-        timeLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "seconds");
+        shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
     }
 }
 
@@ -153,23 +154,23 @@ static int init_glfw() {
     return 1;
 }
 
-static unsigned int load_shader(const char* fsSource) {
+static int shader_create(Shader* s, const char* fsSource) {
     int success;
     char infoLog[512];
-    unsigned int shaderProgram, vertexShader, fragmentShader;
+    unsigned int program, vertShader, fragShader;
 
-    shaderProgram = glCreateProgram();
+    program = glCreateProgram();
 
-    fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fsSource, NULL);
-    glCompileShader(fragmentShader);
-    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    fragShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragShader, 1, &fsSource, NULL);
+    glCompileShader(fragShader);
+    glGetShaderiv(fragShader, GL_COMPILE_STATUS, &success);
     if (!success) {
-        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        glGetShaderInfoLog(fragShader, 512, NULL, infoLog);
         printf("ERROR: Shader Compilation Failed\n%s\n", infoLog);
         return 0;
     }
-    glAttachShader(shaderProgram, fragmentShader);
+    glAttachShader(program, fragShader);
 
     const char* vsSource = "#version 330 core\n"
         "layout (location = 0) in vec3 aPos;\n"
@@ -184,25 +185,26 @@ static unsigned int load_shader(const char* fsSource) {
         "    TexCoord.x = aTexCoord.x;\n"
         "    TexCoord.y = abs(uFlipY - aTexCoord.y);\n"
         "}\n";
-    vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vsSource, NULL);
-    glCompileShader(vertexShader);
-    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    vertShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertShader, 1, &vsSource, NULL);
+    glCompileShader(vertShader);
+    glGetShaderiv(vertShader, GL_COMPILE_STATUS, &success);
     if (!success) {
-        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        glGetShaderInfoLog(vertShader, 512, NULL, infoLog);
         printf("ERROR: Shader Compilation Failed\n%s\n", infoLog);
         return 0;
     }
-    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(program, vertShader);
 
-    glLinkProgram(shaderProgram);
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
+    glLinkProgram(program);
+    glDeleteShader(vertShader);
+    glDeleteShader(fragShader);
 
-    return shaderProgram;
+    s->id = program;
+    return 0;
 }
 
-static unsigned int load_wave_shader() {
+static int shader_create_wave(Shader* s) {
     const char* fsSource = " #version 330\n"
     " out vec4 FragColor;\n"
     " in vec2 TexCoord;\n"
@@ -230,16 +232,16 @@ static unsigned int load_wave_shader() {
     // "     finalColor = texture(texture0, p)*colDiffuse*fragColor;\n"
     "     finalColor = texture(texture0, p);\n"
     " }\n";
-    unsigned int shader = load_shader(fsSource);
-    glUseProgram(shader);
+    shader_create(s, fsSource);
+    glUseProgram(s->id);
 
-    int freqXLoc = glGetUniformLocation(shader, "freqX");
-    int freqYLoc = glGetUniformLocation(shader, "freqY");
-    int ampXLoc = glGetUniformLocation(shader, "ampX");
-    int ampYLoc = glGetUniformLocation(shader, "ampY");
-    int speedXLoc = glGetUniformLocation(shader, "speedX");
-    int speedYLoc = glGetUniformLocation(shader, "speedY");
-    int sizeLoc = glGetUniformLocation(shader, "size");
+    int freqXLoc = glGetUniformLocation(s->id, "freqX");
+    int freqYLoc = glGetUniformLocation(s->id, "freqY");
+    int ampXLoc = glGetUniformLocation(s->id, "ampX");
+    int ampYLoc = glGetUniformLocation(s->id, "ampY");
+    int speedXLoc = glGetUniformLocation(s->id, "speedX");
+    int speedYLoc = glGetUniformLocation(s->id, "speedY");
+    int sizeLoc = glGetUniformLocation(s->id, "size");
 
     float freqX = 25.0f;
     float freqY = 25.0f;
@@ -256,10 +258,14 @@ static unsigned int load_wave_shader() {
     glUniform1f(speedXLoc, speedX);
     glUniform1f(speedYLoc, speedY);
 
-    return shader;
+    s->projection = glGetUniformLocation(s->id, "uProjection");
+    s->time = glGetUniformLocation(s->id, "seconds");
+    s->flipy = glGetUniformLocation(s->id, "uFlipY");
+
+    return 0;
 }
 
-static unsigned int load_default_shader() {
+static int shader_create_default(Shader* s) {
     const char* fsSource = "#version 330 core\n"
         "out vec4 FragColor;\n"
         "in vec2 TexCoord;\n"
@@ -267,7 +273,15 @@ static unsigned int load_default_shader() {
         "void main() {\n"
         "   FragColor = texture(ourTexture, TexCoord);\n"
         "}\n\0";
-    return load_shader(fsSource);
+
+    shader_create(s, fsSource);
+    glUseProgram(s->id);
+
+    s->projection = glGetUniformLocation(s->id, "uProjection");
+    s->time = glGetUniformLocation(s->id, "seconds");
+    s->flipy = glGetUniformLocation(s->id, "uFlipY");
+
+    return 0;
 }
 
 static FILE* open_file_handle(const char* filename, size_t *fileSize) {
@@ -332,10 +346,12 @@ static int read_jpeg_into(const char* filename, void **dstBuf, int *width, int *
     fclose(fh);
     fh = NULL;
 
+    time_req = clock();
     if (tj3DecompressHeader(tjh, srcBuf, size) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         goto cleanup;
     }
+    printf("IMAGE HEADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     w = tj3Get(tjh, TJPARAM_JPEGWIDTH);
     h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
@@ -614,9 +630,8 @@ int main(int argc, char** argv) {
         return 3;
     }
     time_req = clock();
-    state.shaderIndex = 0;
-    state.shaders[0] = load_default_shader();
-    state.shaders[1] = load_wave_shader();
+    shader_create_default(&shaders[0]);
+    shader_create_wave(&shaders[1]);
     printf("> SHADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     time_req = clock();
@@ -625,32 +640,31 @@ int main(int argc, char** argv) {
     printf("> VAO: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     time_req = clock();
-    glUseProgram(state.shaders[state.shaderIndex]);
-    projLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uProjection");
-    timeLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "seconds");
-    flipYLoc = glGetUniformLocation(state.shaders[state.shaderIndex], "uFlipY");
-    glUniform1i(flipYLoc, 1);
+    glUseProgram(shaders[0].id);
+    glUniform1i(shaders[0].flipy, 1);
+    glUseProgram(shaders[1].id);
+    glUniform1i(shaders[1].flipy, 1);
     glBindTexture(GL_TEXTURE_2D, state.texture);
     // glfwWaitEventsTimeout(1);
     printf("> FIN: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     while (!glfwWindowShouldClose(state.window)) {
         glClear(GL_COLOR_BUFFER_BIT);
-        glUseProgram(state.shaders[state.shaderIndex]);
+        glUseProgram(shaders[shaderIndex].id);
 
         if (state.isDirty) {
             state.isDirty = 0;
             update_mouse_dragging();
             update_projection();
-            glUniformMatrix4fv(projLoc, 1, GL_FALSE, state.projection);
+            glUniformMatrix4fv(shaders[shaderIndex].projection, 1, GL_FALSE, state.projection);
         }
-        if (state.shaderIndex && timeLoc != -1)
-            glUniform1f(timeLoc, (float)glfwGetTime());
+        if (shaderIndex && shaders[shaderIndex].time != -1)
+            glUniform1f(shaders[shaderIndex].time, (float)glfwGetTime());
 
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glfwSwapBuffers(state.window);
 
-        if (state.shaderIndex)
+        if (shaderIndex)
             glfwPollEvents();
         else
             glfwWaitEvents();
