@@ -465,6 +465,11 @@ static unsigned int init_image_texture(const char* filename) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // float maxAnisotropy = 0.0f;
+    // glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
+    // glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
+    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     glCheckError();
     glTexImage2D(GL_TEXTURE_2D,
         0, GL_RGB8, state.imageWidth, state.imageHeight,
@@ -477,51 +482,6 @@ static unsigned int init_image_texture(const char* filename) {
     glCheckError();
     printf("> PBO TEX: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
-    return texture;
-}
-
-static unsigned int init_image_texture2(const char* filename) {
-    void *dstBuf = NULL;
-    unsigned int texture;
-
-    if (useStb) {
-        if (read_stb_image_into(filename, &dstBuf, &state.imageWidth, &state.imageHeight) < 0) {
-            return 0;
-        }
-    } else {
-        if (read_jpeg_into(filename, &dstBuf, &state.imageWidth, &state.imageHeight) < 0) {
-            return 0;
-        }
-    }
-
-    time_req = clock();
-    glGenTextures(1, &texture);
-    glCheckError();
-
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glCheckError();
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glCheckError();
-    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-
-    // float maxAnisotropy = 0.0f;
-    // glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
-    // glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
-
-
-    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D,
-        0, GL_RGB8, state.imageWidth, state.imageHeight,
-        0, GL_RGB, GL_UNSIGNED_BYTE, dstBuf
-    );
-    glCheckError();
-
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glCheckError();
-
-    printf("> NORM TEX: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
-    free(dstBuf);
     return texture;
 }
 
