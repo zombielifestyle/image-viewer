@@ -18,6 +18,8 @@ typedef struct {
     int projection;
     int time;
     int flipy;
+    int size;
+    int position;
 } Shader;
 Shader shaders[2];
 unsigned int shaderIndex = 0;
@@ -44,13 +46,17 @@ struct State {
     int isDirty;
     int isZoom;
 
-    unsigned int VAO;
+    unsigned int VAO, EBO, VBO;
     GLFWwindow* window;
 
 } state;
 
 int useStb = 0;
 clock_t time_req;
+
+int imageIndex = 0;
+Image imageArray[1];
+Image* image;
 
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -66,6 +72,16 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
     if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         state.isDirty = 1;
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
+        glUseProgram(shaders[shaderIndex].id);
+        glUniform2f(shaders[shaderIndex].size, (float)image->width, (float)image->height);
+    }
+    if ((key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
+        state.isDirty = 1;
+        imageIndex = imageIndex+1 >= len(imageArray) ? 0 : imageIndex + 1;
+        image = &imageArray[imageIndex];
+        glBindTexture(GL_TEXTURE_2D, image->textureId);
+        glUseProgram(shaders[shaderIndex].id);
+        glUniform2f(shaders[shaderIndex].size, (float)image->width, (float)image->height);
     }
 }
 
@@ -180,18 +196,22 @@ static int shader_create(Shader* s, const char* fsSource) {
     glAttachShader(program, fragShader);
 
     const char* vsSource = "#version 330 core\n"
-        "layout (location = 0) in vec3 aPos;\n"
+        "layout (location = 0) in vec2 aPos;\n"
         "layout (location = 1) in vec2 aTexCoord;\n"
         "\n"
         "out vec2 TexCoord;\n"
         "uniform mat4 uProjection;\n"
-        "uniform int uFlipY;"
+        "uniform bool uFlipY;\n"
+        "uniform vec2 size;\n"
+        "uniform vec2 position;\n"
         "\n"
         "void main() {\n"
-        "    gl_Position = uProjection * vec4(aPos, 1.0);\n"
+        "    vec2 scaledPos = aPos * size;\n"
+        "    gl_Position = uProjection * vec4(scaledPos + position, 0.0, 1.0);\n"
         "    TexCoord.x = aTexCoord.x;\n"
-        "    TexCoord.y = abs(uFlipY - aTexCoord.y);\n"
+        "    TexCoord.y = uFlipY ? 1.0 - aTexCoord.y : aTexCoord.y;\n"
         "}\n";
+
     vertShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertShader, 1, &vsSource, NULL);
     glCompileShader(vertShader);
@@ -207,7 +227,14 @@ static int shader_create(Shader* s, const char* fsSource) {
     glDeleteShader(vertShader);
     glDeleteShader(fragShader);
 
-    s->id = program;
+    glUseProgram(program);
+    s->id         = program;
+    s->projection = glGetUniformLocation(s->id, "uProjection");
+    s->time       = glGetUniformLocation(s->id, "seconds");
+    s->flipy      = glGetUniformLocation(s->id, "uFlipY");
+    s->size       = glGetUniformLocation(s->id, "size");
+    s->position   = glGetUniformLocation(s->id, "position");
+
     return 0;
 }
 
@@ -236,9 +263,9 @@ static int shader_create_wave(Shader* s) {
     "     vec2 p = TexCoord;\n"
     "     p.x += cos((TexCoord.y - boxTop)*freqX/(pixelWidth*750.0) + (seconds*speedX))*ampX*pixelWidth;\n"
     "     p.y += sin((TexCoord.x - boxLeft)*freqY*aspect/(pixelHeight*750.0) + (seconds*speedY))*ampY*pixelHeight;\n"
-    // "     finalColor = texture(texture0, p)*colDiffuse*fragColor;\n"
     "     finalColor = texture(texture0, p);\n"
     " }\n";
+
     shader_create(s, fsSource);
     glUseProgram(s->id);
 
@@ -265,10 +292,6 @@ static int shader_create_wave(Shader* s) {
     glUniform1f(speedXLoc, speedX);
     glUniform1f(speedYLoc, speedY);
 
-    s->projection = glGetUniformLocation(s->id, "uProjection");
-    s->time = glGetUniformLocation(s->id, "seconds");
-    s->flipy = glGetUniformLocation(s->id, "uFlipY");
-
     return 0;
 }
 
@@ -279,15 +302,8 @@ static int shader_create_default(Shader* s) {
         "uniform sampler2D ourTexture;\n"
         "void main() {\n"
         "   FragColor = texture(ourTexture, TexCoord);\n"
-        "}\n\0";
-
+        "}\n";
     shader_create(s, fsSource);
-    glUseProgram(s->id);
-
-    s->projection = glGetUniformLocation(s->id, "uProjection");
-    s->time = glGetUniformLocation(s->id, "seconds");
-    s->flipy = glGetUniformLocation(s->id, "uFlipY");
-
     return 0;
 }
 
@@ -518,36 +534,33 @@ static int image_load_texture(Image* image) {
     return 0;
 }
 
-static unsigned int init_vao(const Image* image) {
+static void init_vao() {
     float vertices[] = {
-        (float)image->width, (float)image->height, 0.0f,  1.0f, 1.0f,
-        (float)image->width, 0.0f,                 0.0f,  1.0f, 0.0f,
-        0.0f,                0.0f,                 0.0f,  0.0f, 0.0f,
-        0.0f,                (float)image->height, 0.0f,  0.0f, 1.0f
+        1.0f, 1.0f,  1.0f, 1.0f, // Top Right
+        1.0f, 0.0f,  1.0f, 0.0f, // Bottom Right
+        0.0f, 0.0f,  0.0f, 0.0f, // Bottom Left
+        0.0f, 1.0f,  0.0f, 1.0f  // Top Left
     };
     unsigned int indices[] = {
         0, 1, 3,
         1, 2, 3
     };
-    unsigned int VBO, VAO, EBO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
-    glBindVertexArray(VAO);
+    glGenVertexArrays(1, &state.VAO);
+    glGenBuffers(1, &state.VBO);
+    glGenBuffers(1, &state.EBO);
+    glBindVertexArray(state.VAO);
 
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBindBuffer(GL_ARRAY_BUFFER, state.VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
-
-    return VAO;
 }
 
 static void update_mouse_dragging(const Image* image) {
@@ -617,9 +630,11 @@ int main(int argc, char** argv) {
     if (!init_glfw())
         return 2;
 
-    Image image = { .fileName = argv[1], .fileSize = 0 };
-    image_load_texture(&image);
-    if (!image.textureId) {
+    Image t = { .fileName = argv[1], .fileSize = 0 };
+    imageArray[0] = t;
+    image_load_texture(&imageArray[0]);
+    image = &imageArray[0];
+    if (!image->textureId) {
         return 3;
     }
     time_req = clock();
@@ -628,27 +643,31 @@ int main(int argc, char** argv) {
     printf("> SHADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     time_req = clock();
-    state.VAO = init_vao(&image);
-    // glBindVertexArray(state.VAO);
+    init_vao();
     printf("> VAO: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     time_req = clock();
-    glUseProgram(shaders[0].id);
-    glUniform1i(shaders[0].flipy, 1);
-    glUseProgram(shaders[1].id);
-    glUniform1i(shaders[1].flipy, 1);
-    glBindTexture(GL_TEXTURE_2D, image.textureId);
+    glBindTexture(GL_TEXTURE_2D, image->textureId);
+
+    int i = 0;
+    for (;i < len(shaders); i++) {
+        glUseProgram(shaders[i].id);
+        glUniform2f(shaders[i].position, 0.0f, 0.0f);
+        glUniform1i(shaders[i].flipy,    1);
+        glUniform2f(shaders[i].size,     (float)image->width, (float)image->height);
+    }
+    glUseProgram(shaders[shaderIndex].id);
+
     // glfwWaitEventsTimeout(1);
     printf("> FIN: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
     while (!glfwWindowShouldClose(state.window)) {
         glClear(GL_COLOR_BUFFER_BIT);
-        glUseProgram(shaders[shaderIndex].id);
 
         if (state.isDirty) {
             state.isDirty = 0;
-            update_mouse_dragging(&image);
-            update_projection(&image);
+            update_mouse_dragging(image);
+            update_projection(image);
             glUniformMatrix4fv(shaders[shaderIndex].projection, 1, GL_FALSE, state.projection);
         }
         if (shaderIndex && shaders[shaderIndex].time != -1)
