@@ -45,7 +45,7 @@ struct State {
 
     int windowWidth, windowHeight;
 
-    int isDragging;
+    int isPanning;
     int isDirty;
     int isZoom;
 
@@ -120,17 +120,17 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
     if (state.isZoom) {
         if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
             glfwSetCursorPosCallback(window, cursor_position_callback);
-            state.isDragging = 1;
             double x, y;
             glfwGetCursorPos(window, &x, &y);
-            state.mouseX = x;
-            state.mouseY = y;
+            state.mouseX     = x;
+            state.mouseY     = y;
             state.lastMouseX = x;
             state.lastMouseY = y;
+            state.isPanning  = 1;
         }
         if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
             glfwSetCursorPosCallback(window, NULL);
-            state.isDragging = 0;
+            state.isPanning = 0;
         }
     }
 }
@@ -187,18 +187,15 @@ static int init_glfw() {
         printf("Failed to initialize GLAD\n");
         return 0;
     }
-    printf("gl version: %s\n", glGetString(GL_VERSION));
-    printf("renderer: %s\n", glGetString(GL_RENDERER));
-    // glfwSetCursorPosCallback(window, cursor_position_callback);
-    // glfwSetWindowRefreshCallback(window, window_refresh_callback);
+    printf("GL_VERSION: %s\n",        glGetString(GL_VERSION));
+    printf("GL_RENDERER: %s\n",       glGetString(GL_RENDERER));
+    printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
+
     glfwSetMouseButtonCallback(state.window, mouse_button_callback);
     glfwSetKeyCallback(state.window, key_callback);
     glfwSetWindowSizeCallback(state.window, window_size_callback);
     glfwSwapInterval(1);
-    // glEnable(GL_FRAMEBUFFER_SRGB);
-    // glEnable(GL_BLEND);
-    // glDisable(GL_BLEND);
-    // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
     return 1;
 }
 
@@ -392,7 +389,6 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     tjhandle tjh = NULL;
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
-    printf("TJ Version: %d\n", TURBOJPEG_VERSION_NUMBER);
     tj3Set(tjh, TJPARAM_STOPONWARNING, 1);
     tj3Set(tjh, TJPARAM_NOREALLOC,     1);
     tj3Set(tjh, TJPARAM_MAXMEMORY,     0);
@@ -543,9 +539,6 @@ static int image_load_texture(Image* image) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    // float maxAnisotropy = 0.0f;
-    // glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAnisotropy);
-    // glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAnisotropy);
 
     // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glCheckError();
@@ -594,8 +587,8 @@ static void init_vao() {
     glEnableVertexAttribArray(1);
 }
 
-static void update_mouse_dragging(const Image* image) {
-    if (!state.isDragging)
+static void update_mouse_panning(const Image* image) {
+    if (!state.isPanning)
         return;
     state.offsetX -= (float)(state.mouseX - state.lastMouseX);
     state.offsetY += (float)(state.mouseY - state.lastMouseY);
@@ -607,7 +600,7 @@ static void update_mouse_dragging(const Image* image) {
     state.lastMouseY = state.mouseY;
 }
 
-static void get_ortho_matrix(float* m, float l, float r, float b, float t) {
+static void update_ortho_matrix(float* m, float l, float r, float b, float t) {
     for(int i = 0; i < 16; i++) m[i] = 0.0f;
     m[0]  = 2.0f / (r - l);
     m[5]  = 2.0f / (t - b);
@@ -645,7 +638,7 @@ static void update_projection(const Image* image) {
             top = image->height + (worldHeight - image->height) / 2.0f;
         }
     }
-    get_ortho_matrix(state.projection, left, right, bottom, top);
+    update_ortho_matrix(state.projection, left, right, bottom, top);
 }
 
 int main(int argc, char** argv) {
@@ -655,6 +648,7 @@ int main(int argc, char** argv) {
     }
 
     state.isDirty      = 1;
+    state.isZoom       = 0;
     state.windowWidth  = 640;
     state.windowHeight = 480;
 
@@ -703,20 +697,21 @@ int main(int argc, char** argv) {
 
     while (!glfwWindowShouldClose(state.window)) {
         glClear(GL_COLOR_BUFFER_BIT);
-
         if (state.isDirty) {
             state.isDirty = 0;
-            update_mouse_dragging(image);
+            update_mouse_panning(image);
             update_projection(image);
+
             glUniformMatrix4fv(shaders[shaderIndex].uProjection, 1, GL_FALSE, state.projection);
         }
-        if (shaderIndex && shaders[shaderIndex].uTime != -1)
+        if (shaders[shaderIndex].uTime > 0) {
             glUniform1f(shaders[shaderIndex].uTime, (float)glfwGetTime());
+        }
 
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glfwSwapBuffers(state.window);
 
-        if (shaderIndex)
+        if (shaders[shaderIndex].uTime > 0)
             glfwPollEvents();
         else
             glfwWaitEvents();
