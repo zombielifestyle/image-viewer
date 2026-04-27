@@ -56,7 +56,6 @@ struct State {
 
 int useStb = 0;
 int useMmap = 1;
-clock_t time_req;
 int testCycling = 1;
 
 int imageIndex = 0;
@@ -80,6 +79,12 @@ const char* vsSource = "#version 330 core\n"
     "    TexCoord.x = aTexCoord.x;\n"
     "    TexCoord.y = uFlipY ? 1.0 - aTexCoord.y : aTexCoord.y;\n"
     "}\n";
+
+clock_t profiler_time;
+#define profiler(s) { \
+    printf("> profiler: %fms - %s\n", (float)(clock() - profiler_time) / CLOCKS_PER_SEC, s); \
+    profiler_time = clock(); \
+}
 
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -172,21 +177,25 @@ static int init_glfw() {
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
     if (!glfwInit())
         return -1;
+    profiler("glfwInit");
+
+    // glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    // glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
-
     state.window = glfwCreateWindow(state.windowWidth, state.windowHeight, "Image Viewer", NULL, NULL);
     if (!state.window) {
         glfwTerminate();
         return 0;
     }
+    profiler("glfwCreateWindow");
     glfwMakeContextCurrent(state.window);
+    profiler("glfwMakeContextCurrent");
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         printf("Failed to initialize GLAD\n");
         return 0;
     }
+    profiler("glad");
     printf("GL_VERSION: %s\n",        glGetString(GL_VERSION));
     printf("GL_RENDERER: %s\n",       glGetString(GL_RENDERER));
     printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
@@ -395,26 +404,25 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
     // tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
 
-    time_req = clock();
     void *srcBuf = NULL;
     if (useMmap) {
         if (image_map_file_src_into(image, &srcBuf) < 0) {
             goto cleanup;
         }
+        profiler("image_map_file_src_into");
     } else {
         if (image_read_file_src_into(image, &srcBuf) < 0) {
             goto cleanup;
         }
+        profiler("image_read_file_src_into");
     }
-    printf("IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
     printf("file: %s size: %ld\n", image->fileName, image->fileSize);
 
-    time_req = clock();
     if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         goto cleanup;
     }
-    printf("IMAGE HEADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("tj3DecompressHeader");
 
     w = tj3Get(tjh, TJPARAM_JPEGWIDTH);
     h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
@@ -435,9 +443,8 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     // w = TJSCALED(w, scalingFactor);
     // h = TJSCALED(h, scalingFactor);
 
-    time_req = clock();
     ret = tj3Decompress8(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
-    printf("> IMAGE DEC: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("tj3Decompress8");
     if (ret < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         ret = -1;
@@ -492,8 +499,8 @@ static unsigned int image_read_stb_into(Image* image, void **dstBuf) {
 static int image_load_texture(Image* image) {
     GLuint pbo;
     unsigned int texture;
+    profiler("image_load_texture");
 
-    time_req = clock();
     glGenBuffers(1, &pbo);
     glCheckError();
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
@@ -506,17 +513,13 @@ static int image_load_texture(Image* image) {
     // glCheckError();
     // glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW);
     // glCheckError();
-    printf("> PBO SETUP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
 
-    time_req = clock();
     void* ptr = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
     glCheckError();
-    printf("> PBO MAP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("image_load_texture -> map buffers");
 
     if (useStb) {
-        time_req = clock();
         int ret = image_read_stb_into(image, &ptr);
-        printf("> IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
         if (ret < 0) {
             return -1;
         }
@@ -526,12 +529,10 @@ static int image_load_texture(Image* image) {
     }
     printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
 
-    time_req = clock();
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
     glCheckError();
-    printf("> PBO UNMAP: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("image_load_texture -> unmap buffers");
 
-    time_req = clock();
     glGenTextures(1, &texture);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
     glCheckError();
@@ -552,7 +553,7 @@ static int image_load_texture(Image* image) {
     glCheckError();
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glCheckError();
-    printf("> PBO TEX: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("image_load_texture -> texture");
 
     image->textureId = texture;
     return 0;
@@ -646,7 +647,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
         return 1;
     }
-
+    profiler_time = clock();
     state.isDirty      = 1;
     state.isZoom       = 0;
     state.windowWidth  = 640;
@@ -654,6 +655,8 @@ int main(int argc, char** argv) {
 
     if (!init_glfw())
         return 2;
+
+    profiler("init");
 
     if (testCycling) {
         Image t  = { .fileName = "images/architecture.jpg", .fileSize = 0 };
@@ -671,16 +674,13 @@ int main(int argc, char** argv) {
     if (!image->textureId) {
         return 3;
     }
-    time_req = clock();
     shader_create_default(&shaders[0]);
     shader_create_wave(&shaders[1]);
-    printf("> SHADER: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("shader_create_*");
 
-    time_req = clock();
     init_vao();
-    printf("> VAO: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("init_vao");
 
-    time_req = clock();
     glBindTexture(GL_TEXTURE_2D, image->textureId);
 
     int i = 0;
@@ -693,7 +693,7 @@ int main(int argc, char** argv) {
     glUseProgram(shaders[shaderIndex].id);
 
     // glfwWaitEventsTimeout(1);
-    printf("> FIN: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
+    profiler("last mile");
 
     while (!glfwWindowShouldClose(state.window)) {
         glClear(GL_COLOR_BUFFER_BIT);
