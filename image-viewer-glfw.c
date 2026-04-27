@@ -1,16 +1,17 @@
 #include "glad/glad.h"
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb/stb_image.h"
 #include <turbojpeg.h>
+#include <png.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <time.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #define len(x)  (sizeof(x) / sizeof((x)[0]))
 
@@ -54,9 +55,7 @@ struct State {
 
 } state;
 
-int useStb = 0;
-int useMmap = 1;
-int testCycling = 1;
+int testCycling = 0;
 
 int imageIndex = 0;
 Image imageArray[2];
@@ -82,7 +81,7 @@ const char* vsSource = "#version 330 core\n"
 
 clock_t profiler_time;
 #define profiler(s) { \
-    printf("> profiler: %fms - %s\n", (float)(clock() - profiler_time) / CLOCKS_PER_SEC, s); \
+    printf("> profiler: %8.2fms - %s\n", ((float)(clock() - profiler_time) / CLOCKS_PER_SEC)*1000, s); \
     profiler_time = clock(); \
 }
 
@@ -175,10 +174,13 @@ static int init_glfw() {
     glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
     // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
+    // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
+
     if (!glfwInit())
         return -1;
     profiler("glfwInit");
 
+    // glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     // glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -325,7 +327,7 @@ static int shader_create_default(Shader* s) {
     shader_create(s, fsSource);
     return 0;
 }
-
+/*
 static int image_open(Image* image) {
     long size = 0;
     image->fileHandle = NULL;
@@ -349,7 +351,7 @@ static int image_open(Image* image) {
     image->fileSize = size;
     return 0;
 }
-
+*/
 static int image_map_file_src_into(Image* image, void **buf) {
     int fd = open(image->fileName, O_RDONLY);
     if (fd == -1) {
@@ -372,11 +374,13 @@ static int image_map_file_src_into(Image* image, void **buf) {
         return -1;
     }
 
-    image->fileSize = st.st_size;
     close(fd);
+    image->fileSize = st.st_size;
+    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
+
     return 0;
 }
-
+/*
 static int image_read_file_src_into(Image* image, void **buf) {
     if (image_open(image) < 0) {
         return -1;
@@ -392,8 +396,9 @@ static int image_read_file_src_into(Image* image, void **buf) {
     }
     return 0;
 }
+*/
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
-static int image_read_jpeg_into(Image* image, void **dstBuf) {
+static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_RGB;
     tjhandle tjh = NULL;
 
@@ -403,20 +408,6 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     tj3Set(tjh, TJPARAM_MAXMEMORY,     0);
     tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
     // tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
-
-    void *srcBuf = NULL;
-    if (useMmap) {
-        if (image_map_file_src_into(image, &srcBuf) < 0) {
-            goto cleanup;
-        }
-        profiler("image_map_file_src_into");
-    } else {
-        if (image_read_file_src_into(image, &srcBuf) < 0) {
-            goto cleanup;
-        }
-        profiler("image_read_file_src_into");
-    }
-    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
 
     if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
@@ -443,7 +434,7 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     // w = TJSCALED(w, scalingFactor);
     // h = TJSCALED(h, scalingFactor);
 
-    ret = tj3Decompress8(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
+    ret = tj3Decompress8(tjh, srcBuf, image->fileSize, dstBuf, 0, pixelFormat);
     profiler("tj3Decompress8");
     if (ret < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
@@ -456,44 +447,39 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     image->height = h;
 
   cleanup:
-    if (useMmap) {
-        munmap(srcBuf, image->fileSize);
-    } else {
-        tj3Free(srcBuf);
-        srcBuf = NULL;
-    }
+    munmap(srcBuf, image->fileSize);
     tj3Destroy(tjh);
     if (image->fileHandle) fclose(image->fileHandle);
     return ret;
 }
 
-static unsigned int image_read_stb_into(Image* image, void **dstBuf) {
-    int channels;
-    if (image_open(image) < 0) {
+static unsigned int image_read_png_into(Image* image, void *srcBuf, void *dstBuf) {
+    png_image pngImage;
+    memset(&pngImage, 0, (sizeof pngImage));
+    pngImage.version = PNG_IMAGE_VERSION;
+
+    if (!png_image_begin_read_from_memory(&pngImage, srcBuf, image->fileSize)) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, pngImage.message);
         return -1;
     }
-    unsigned char* srcBuf = (unsigned char *)malloc(image->fileSize);
-    if (srcBuf == NULL) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+    profiler("png_image_begin_read_from_memory");
+
+    pngImage.format = PNG_FORMAT_RGB;
+    if (!png_image_finish_read(&pngImage, 0, dstBuf, 0, NULL)) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, pngImage.message);
         return -1;
     }
-    if (fread(srcBuf, image->fileSize, 1, image->fileHandle) < 1) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        return -1;
-    }
-    fclose(image->fileHandle);
-    image->fileHandle = NULL;
-    printf(">> ptr %p ", (void*)dstBuf);
-    printf(">> ptr %p ", (void*)*dstBuf);
-    *dstBuf = (unsigned char *)stbi_load_from_memory(srcBuf, image->fileSize, &image->width, &image->height, &channels, 3);
-    if (!(*dstBuf)) {
-        fprintf(stderr, "Error: Could not load image '%s'\n", image->fileName);
-        fprintf(stderr, "Reason: %s\n", stbi_failure_reason());
-        return -1;
-    }
-    printf(">> ptr %p ", (void*)dstBuf);
-    printf(">> ptr %p ", (void*)*dstBuf);
+    profiler("png_image_finish_read");
+
+    image->width  = pngImage.width;
+    image->height = pngImage.height;
+
     return 0;
+}
+
+int is_jpeg(const unsigned char *srcBuf, size_t size) {
+    if (size < 3) return 0;
+    return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
 }
 
 static int image_load_texture(Image* image) {
@@ -514,18 +500,26 @@ static int image_load_texture(Image* image) {
     // glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW);
     // glCheckError();
 
-    void* ptr = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
+    void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
     glCheckError();
     profiler("image_load_texture -> map buffers");
 
-    if (useStb) {
-        int ret = image_read_stb_into(image, &ptr);
-        if (ret < 0) {
+    void* srcBuf = NULL;
+    if (image_map_file_src_into(image, &srcBuf) < 0) {
+        return -1;
+    }
+    profiler("image_map_file_src_into");
+
+    if (png_sig_cmp(srcBuf, 0, 8) == 0) {
+        if (image_read_png_into(image, srcBuf, dstBuf) < 0) {
+            return -1;
+        }
+    } else if (is_jpeg(srcBuf, image->fileSize)) {
+        if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
             return -1;
         }
     } else {
-        if (image_read_jpeg_into(image, &ptr) < 0)
-            return -1;
+        fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
     }
     printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
 
@@ -556,6 +550,7 @@ static int image_load_texture(Image* image) {
     profiler("image_load_texture -> texture");
 
     image->textureId = texture;
+
     return 0;
 }
 

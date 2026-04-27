@@ -17,6 +17,10 @@ CFLAGS  += -Ilibs/stb
 LDFLAGS += libs/libjpeg-turbo/build/libturbojpeg.a
 CFLAGS  += -Ilibs/libjpeg-turbo/src
 
+# libpng
+CFLAGS  += -Ilibs/libpng-1.6.58/
+LDFLAGS += libs/libpng-1.6.58/libpng.a
+
 # vendored
 # RUNENV  += MESA_LOADER_DRIVER_OVERRIDE=NVIDIA
 CFLAGS  += -Ilibs/glfw/include
@@ -37,6 +41,7 @@ raylib:
 
 run: clean all
 	$(RUNENV) ./image-viewer images/lost-place.jpg
+# 	$(RUNENV) ./image-viewer images/lost-place-8.png
 # 	$(RUNENV) ./image-viewer images/architecture.jpg
 
 clean:

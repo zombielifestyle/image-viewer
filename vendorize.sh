@@ -1,14 +1,13 @@
 #!/bin/bash
 
 #rm -rf libs/raylib
-mkdir -p libs/stb
-
 #git clone --depth 1 --branch 5.0 https://github.com/raysan5/raylib.git libs/raylib
 
-# stb
-curl -o libs/stb/stb_image.h https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
+## stb
+# mkdir -p libs/stb
+# curl -o libs/stb/stb_image.h https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
 
-# glfw
+## glfw
 git clone --depth 1 --branch 3.4 https://github.com/glfw/glfw.git libs/glfw
 mkdir -p libs/glfw/build
 cd libs/glfw/build
@@ -17,6 +16,7 @@ make -j$(nproc)
 cd -
 
 
+## libjpeg-turbo
 # https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/BUILDING.md
 # note: requires to delete build dir to rerun cmake
 #sudo apt-get install nasm
@@ -24,4 +24,11 @@ git clone --depth 1 --branch 3.1.90 https://github.com/libjpeg-turbo/libjpeg-tur
 mkdir -p libs/libjpeg-turbo/build
 cd libs/libjpeg-turbo/build
 make -j$(nproc)
+cd -
+
+## libpng
+curl -L https://sourceforge.net/projects/libpng/files/libpng16/1.6.58/libpng-1.6.58.tar.xz/download |tar -C libs/ -vxJ 
+cd libs/libpng-1.6.58/
+cmake .
+make
 cd -
