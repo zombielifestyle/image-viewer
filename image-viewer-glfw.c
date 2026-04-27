@@ -163,7 +163,7 @@ static int init_glfw() {
     }
     glfwMakeContextCurrent(state.window);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        printf("Failed to nitialize GLAD\n");
+        printf("Failed to initialize GLAD\n");
         return 0;
     }
     printf("gl version: %s\n", glGetString(GL_VERSION));
@@ -179,34 +179,6 @@ static int init_glfw() {
     // glDisable(GL_BLEND);
     // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     return 1;
-}
-
-int image_map_file_src_into(Image* image, void **buf) {
-    int fd = open(image->fileName, O_RDONLY);
-    if (fd == -1) {
-        perror("Error opening file");
-        return -1;
-    }
-
-    struct stat st;
-    if (fstat(fd, &st) == -1) {
-        perror("Error getting file size");
-        close(fd);
-        return -1;
-    }
-    size_t filesize = st.st_size;
-    image->fileSize = st.st_size;
-
-    *buf = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
-
-    if (*buf == MAP_FAILED) {
-        perror("Error mapping file");
-        close(fd);
-        return -1;
-    }
-    close(fd);
-
-    return 0;
 }
 
 static int shader_create(Shader* s, const char* fsSource) {
@@ -363,10 +335,51 @@ static int image_open(Image* image) {
     return 0;
 }
 
+static int image_map_file_src_into(Image* image, void **buf) {
+    int fd = open(image->fileName, O_RDONLY);
+    if (fd == -1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    size_t filesize = st.st_size;
+
+    *buf = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (*buf == MAP_FAILED) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    image->fileSize = st.st_size;
+    close(fd);
+    return 0;
+}
+
+static int image_read_file_src_into(Image* image, void **buf) {
+    if (image_open(image) < 0) {
+        return -1;
+    }
+    *buf = (void*)malloc(image->fileSize);
+    if (*buf == NULL) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+    if (fread(*buf, image->fileSize, 1, image->fileHandle) < 1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
 static int image_read_jpeg_into(Image* image, void **dstBuf) {
-    int ret = -1, colorspace, jpegPrecision, lossless, w, h,
-        pixelFormat = TJPF_UNKNOWN, precision = -1;
+    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_RGB;
     tjhandle tjh = NULL;
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
@@ -380,23 +393,16 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     time_req = clock();
     void *srcBuf = NULL;
     if (useMmap) {
-        image_map_file_src_into(image, &srcBuf);
-    } else {
-        if (image_open(image) < 0) {
-            return ret;
-        }
-        srcBuf = (void*)malloc(image->fileSize);
-        if (srcBuf == NULL) {
-            fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        if (image_map_file_src_into(image, &srcBuf) < 0) {
             goto cleanup;
         }
-        if (fread(srcBuf, image->fileSize, 1, image->fileHandle) < 1) {
-            fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+    } else {
+        if (image_read_file_src_into(image, &srcBuf) < 0) {
             goto cleanup;
         }
     }
     printf("IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
-    printf("file: %s size: %ld;; \n", image->fileName, image->fileSize);
+    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
 
     time_req = clock();
     if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
@@ -409,15 +415,11 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
     jpegPrecision = tj3Get(tjh, TJPARAM_PRECISION);
     colorspace = tj3Get(tjh, TJPARAM_COLORSPACE);
-    if (colorspace == TJCS_CMYK || colorspace == TJCS_YCCK)
-      pixelFormat = TJPF_CMYK;
-    else
-      pixelFormat = TJPF_RGBA;
-
-    if (precision == -1 || lossless || jpegPrecision != 8)
-        precision = jpegPrecision;
-
-    pixelFormat = TJPF_RGB;
+    if (colorspace == TJCS_CMYK || colorspace == TJCS_YCCK) {
+        fprintf(stderr, "ERROR:%d: CMYK/YCCK pixel formats not supported.\n", __LINE__);
+        goto cleanup;
+    }
+    printf("precision: %d colorspace: %d\n", jpegPrecision, colorspace);
 
     // tjscalingfactor scalingFactor = TJUNSCALED;
     // tjscalingfactor scalingFactor = {1,4};
@@ -428,31 +430,15 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     // w = TJSCALED(w, scalingFactor);
     // h = TJSCALED(h, scalingFactor);
 
-    // sampleSize = (precision <= 8 ? 1 : 2);
-    // if (*dstBuf == NULL) {
-    //     *dstBuf = (unsigned char *)malloc(
-    //         w * h * tjPixelSize[pixelFormat] * sampleSize
-    //     );
-    //     if (*dstBuf == NULL) {
-    //         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-    //         goto cleanup;
-    //     }
-    // }
-
     time_req = clock();
-    if (precision <= 8) {
-      ret = tj3Decompress8 (tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
-    } else if (precision <= 12) {
-      ret = tj3Decompress12(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
-    } else {
-      ret = tj3Decompress16(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
-    }
+    ret = tj3Decompress8(tjh, srcBuf, image->fileSize, *dstBuf, 0, pixelFormat);
     printf("> IMAGE DEC: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
     if (ret < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         ret = -1;
         goto cleanup;
     }
+
     ret           = 0;
     image->width  = w;
     image->height = h;
