@@ -5,11 +5,12 @@
 #include "stb/stb_image.h"
 #include <turbojpeg.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <errno.h>
-#include <limits.h>
 #include <time.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define len(x)  (sizeof(x) / sizeof((x)[0]))
 
@@ -31,6 +32,7 @@ typedef struct {
     int width;
     int height;
     unsigned int textureId;
+    int fd;
 } Image;
 
 struct State {
@@ -52,10 +54,12 @@ struct State {
 } state;
 
 int useStb = 0;
+int useMmap = 1;
 clock_t time_req;
+int testCycling = 0;
 
 int imageIndex = 0;
-Image imageArray[1];
+Image imageArray[2];
 Image* image;
 
 static void error_callback(int error, const char* description) {
@@ -175,6 +179,34 @@ static int init_glfw() {
     // glDisable(GL_BLEND);
     // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     return 1;
+}
+
+int image_map_file_src_into(Image* image, void **buf) {
+    int fd = open(image->fileName, O_RDONLY);
+    if (fd == -1) {
+        perror("Error opening file");
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+        perror("Error getting file size");
+        close(fd);
+        return -1;
+    }
+    size_t filesize = st.st_size;
+    image->fileSize = st.st_size;
+
+    *buf = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
+
+    if (*buf == MAP_FAILED) {
+        perror("Error mapping file");
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    return 0;
 }
 
 static int shader_create(Shader* s, const char* fsSource) {
@@ -336,12 +368,6 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     int ret = -1, colorspace, jpegPrecision, lossless, w, h,
         pixelFormat = TJPF_UNKNOWN, precision = -1;
     tjhandle tjh = NULL;
-    unsigned char *srcBuf = NULL;
-
-    if (image_open(image) < 0) {
-        return ret;
-    }
-    printf("file: %s size: %ld;; \n", image->fileName, image->fileSize);
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
     printf("TJ Version: %d\n", TURBOJPEG_VERSION_NUMBER);
@@ -352,19 +378,25 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     // tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
 
     time_req = clock();
-    srcBuf = (unsigned char *)malloc(image->fileSize);
-    if (srcBuf == NULL) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        goto cleanup;
-    }
-
-    if (fread(srcBuf, image->fileSize, 1, image->fileHandle) < 1) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        goto cleanup;
+    void *srcBuf = NULL;
+    if (useMmap) {
+        image_map_file_src_into(image, &srcBuf);
+    } else {
+        if (image_open(image) < 0) {
+            return ret;
+        }
+        srcBuf = (void*)malloc(image->fileSize);
+        if (srcBuf == NULL) {
+            fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+            goto cleanup;
+        }
+        if (fread(srcBuf, image->fileSize, 1, image->fileHandle) < 1) {
+            fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+            goto cleanup;
+        }
     }
     printf("IMAGE READ: %f\n", (float)(clock() - time_req) / CLOCKS_PER_SEC);
-    fclose(image->fileHandle);
-    image->fileHandle = NULL;
+    printf("file: %s size: %ld;; \n", image->fileName, image->fileSize);
 
     time_req = clock();
     if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
@@ -426,8 +458,12 @@ static int image_read_jpeg_into(Image* image, void **dstBuf) {
     image->height = h;
 
   cleanup:
-    tj3Free(srcBuf);
-    srcBuf = NULL;
+    if (useMmap) {
+        munmap(srcBuf, image->fileSize);
+    } else {
+        tj3Free(srcBuf);
+        srcBuf = NULL;
+    }
     tj3Destroy(tjh);
     if (image->fileHandle) fclose(image->fileHandle);
     return ret;
@@ -630,9 +666,18 @@ int main(int argc, char** argv) {
     if (!init_glfw())
         return 2;
 
-    Image t = { .fileName = argv[1], .fileSize = 0 };
-    imageArray[0] = t;
-    image_load_texture(&imageArray[0]);
+    if (testCycling) {
+        Image t  = { .fileName = "images/architecture.jpg", .fileSize = 0 };
+        imageArray[0] = t;
+        Image t2 = { .fileName = "images/lost-place.jpg",  .fileSize = 0 };
+        imageArray[1] = t2;
+        image_load_texture(&imageArray[0]);
+        image_load_texture(&imageArray[1]);
+    } else {
+        Image t = { .fileName = argv[1], .fileSize = 0 };
+        imageArray[0] = t;
+        image_load_texture(&imageArray[0]);
+    }
     image = &imageArray[0];
     if (!image->textureId) {
         return 3;
