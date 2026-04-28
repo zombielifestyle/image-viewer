@@ -85,6 +85,23 @@ clock_t profiler_time;
     profiler_time = clock(); \
 }
 
+GLenum opengl_print_error(int line) {
+    GLenum errorCode;
+    while ((errorCode = glGetError()) != GL_NO_ERROR) {
+        const char* error;
+        switch (errorCode) {
+            case GL_INVALID_ENUM:                  error = "INVALID_ENUM"; break;
+            case GL_INVALID_VALUE:                 error = "INVALID_VALUE"; break;
+            case GL_INVALID_OPERATION:             error = "INVALID_OPERATION"; break;
+            case GL_OUT_OF_MEMORY:                 error = "OUT_OF_MEMORY"; break;
+            case GL_INVALID_FRAMEBUFFER_OPERATION: error = "INVALID_FRAMEBUFFER_OPERATION"; break;
+        }
+        fprintf(stderr, "GL_ERROR:%d: %s\n", line, error);
+    }
+    return errorCode;
+}
+#define GLERR opengl_print_error(__LINE__)
+
 static void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
 }
@@ -99,18 +116,19 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
     if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         state.isDirty = 1;
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
-        glUseProgram(shaders[shaderIndex].id);
-        glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height);
-        if (shaders[shaderIndex].uWSize != -1)
-            glUniform2f(shaders[shaderIndex].uWSize, (float)state.windowWidth, (float)state.windowHeight);
+        glUseProgram(shaders[shaderIndex].id); GLERR;
+        glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
+        if (shaders[shaderIndex].uWSize != -1) {
+            glUniform2f(shaders[shaderIndex].uWSize, (float)state.windowWidth, (float)state.windowHeight); GLERR;
+        }
     }
     if (testCycling && (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
         state.isDirty = 1;
         imageIndex = imageIndex+1 >= len(imageArray) ? 0 : imageIndex + 1;
         image = &imageArray[imageIndex];
-        glBindTexture(GL_TEXTURE_2D, image->textureId);
-        glUseProgram(shaders[shaderIndex].id);
-        glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height);
+        glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
+        glUseProgram(shaders[shaderIndex].id); GLERR;
+        glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
     }
 }
 
@@ -144,30 +162,9 @@ static void window_size_callback(GLFWwindow* window, int width, int height) {
     state.windowWidth  = width;
     state.windowHeight = height;
     int w, h;
-    glfwGetFramebufferSize(window, &w, &h);
-    glViewport(0, 0, w, h);
+    glfwGetFramebufferSize(window, &w, &h); GLERR;
+    glViewport(0, 0, w, h); GLERR;
 }
-GLenum glCheckError_(const char *file, int line)
-{
-    GLenum errorCode;
-    while ((errorCode = glGetError()) != GL_NO_ERROR)
-    {
-        const char* error;
-        switch (errorCode)
-        {
-            case GL_INVALID_ENUM:                  error = "INVALID_ENUM"; break;
-            case GL_INVALID_VALUE:                 error = "INVALID_VALUE"; break;
-            case GL_INVALID_OPERATION:             error = "INVALID_OPERATION"; break;
-            // case GL_STACK_OVERFLOW:                error = "STACK_OVERFLOW"; break;
-            // case GL_STACK_UNDERFLOW:               error = "STACK_UNDERFLOW"; break;
-            case GL_OUT_OF_MEMORY:                 error = "OUT_OF_MEMORY"; break;
-            case GL_INVALID_FRAMEBUFFER_OPERATION: error = "INVALID_FRAMEBUFFER_OPERATION"; break;
-        }
-        printf("GLERROR:%d: %s\n", line, error);
-    }
-    return errorCode;
-}
-#define glCheckError() glCheckError_(__FILE__, __LINE__)
 
 static int init_glfw() {
     glfwSetErrorCallback(error_callback);
@@ -179,7 +176,6 @@ static int init_glfw() {
     if (!glfwInit())
         return -1;
     profiler("glfwInit");
-
     // glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     // glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -487,21 +483,15 @@ static int image_load_texture(Image* image) {
     unsigned int texture;
     profiler("image_load_texture");
 
-    glGenBuffers(1, &pbo);
-    glCheckError();
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-    glCheckError();
-    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 3, NULL, GL_STREAM_DRAW);
-    glCheckError();
-    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-    // glCheckError();
-    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-    // glCheckError();
-    // glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW);
-    // glCheckError();
+    glGenBuffers(1, &pbo); GLERR;
 
-    void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
-    glCheckError();
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 3, NULL, GL_STREAM_DRAW); GLERR;
+    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
+    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
+    // glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW); GLERR;
+
+    void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
     profiler("image_load_texture -> map buffers");
 
     void* srcBuf = NULL;
@@ -523,30 +513,24 @@ static int image_load_texture(Image* image) {
     }
     printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
 
-    glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-    glCheckError();
+    glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER); GLERR;
     profiler("image_load_texture -> unmap buffers");
 
-    glGenTextures(1, &texture);
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-    glCheckError();
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
-    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenTextures(1, &texture); GLERR;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
+    glBindTexture(GL_TEXTURE_2D, texture); GLERR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); GLERR;
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR); GLERR;
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); GLERR;
 
-    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glCheckError();
+    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1); GLERR;
 
     glTexImage2D(GL_TEXTURE_2D,
         0, GL_RGB8, image->width, image->height,
         0, GL_RGB, GL_UNSIGNED_BYTE, NULL
-    );
-    glCheckError();
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glCheckError();
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-    glCheckError();
+    ); GLERR;
+    glGenerateMipmap(GL_TEXTURE_2D); GLERR;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
     profiler("image_load_texture -> texture");
 
     image->textureId = texture;
@@ -676,16 +660,16 @@ int main(int argc, char** argv) {
     init_vao();
     profiler("init_vao");
 
-    glBindTexture(GL_TEXTURE_2D, image->textureId);
+    glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
 
     int i = 0;
     for (;i < len(shaders); i++) {
-        glUseProgram(shaders[i].id);
-        glUniform2f(shaders[i].uPosition, 0.0f, 0.0f);
-        glUniform1i(shaders[i].uFlipY,    1);
-        glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height);
+        glUseProgram(shaders[i].id); GLERR;
+        glUniform2f(shaders[i].uPosition, 0.0f, 0.0f); GLERR;
+        glUniform1i(shaders[i].uFlipY,    1); GLERR;
+        glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height); GLERR;
     }
-    glUseProgram(shaders[shaderIndex].id);
+    glUseProgram(shaders[shaderIndex].id); GLERR;
 
     // glfwWaitEventsTimeout(1);
     profiler("last mile");
@@ -710,6 +694,7 @@ int main(int argc, char** argv) {
             glfwPollEvents();
         else
             glfwWaitEvents();
+
     }
 
     glfwTerminate();
