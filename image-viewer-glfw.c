@@ -80,6 +80,7 @@ const char* vsSource = "#version 330 core\n"
     "}\n";
 
 clock_t profiler_time;
+clock_t profiler_time_sum;
 #define profiler(s) { \
     printf("> profiler: %8.2fms - %s\n", ((float)(clock() - profiler_time) / CLOCKS_PER_SEC)*1000, s); \
     profiler_time = clock(); \
@@ -168,19 +169,23 @@ static void window_size_callback(GLFWwindow* window, int width, int height) {
 
 static int init_glfw() {
     glfwSetErrorCallback(error_callback);
-    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-    // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+    // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
-    // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
+    glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
 
     if (!glfwInit())
         return -1;
     profiler("glfwInit");
-    // glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-    // glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_NATIVE_CONTEXT_API);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
+
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+
     state.window = glfwCreateWindow(state.windowWidth, state.windowHeight, "Image Viewer", NULL, NULL);
     if (!state.window) {
         glfwTerminate();
@@ -201,7 +206,7 @@ static int init_glfw() {
     glfwSetMouseButtonCallback(state.window, mouse_button_callback);
     glfwSetKeyCallback(state.window, key_callback);
     glfwSetWindowSizeCallback(state.window, window_size_callback);
-    glfwSwapInterval(1);
+    // glfwSwapInterval(1);
 
     return 1;
 }
@@ -323,31 +328,7 @@ static int shader_create_default(Shader* s) {
     shader_create(s, fsSource);
     return 0;
 }
-/*
-static int image_open(Image* image) {
-    long size = 0;
-    image->fileHandle = NULL;
-    image->fileSize   = 0;
-    if ((image->fileHandle = fopen(image->fileName, "rb")) == NULL) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        return -1;
-    }
-    if (fseek(image->fileHandle, 0, SEEK_END) < 0
-        || ((size = ftell(image->fileHandle)) < 0)
-        || fseek(image->fileHandle, 0, SEEK_SET) < 0) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        fclose(image->fileHandle);
-        return -1;
-    }
-    if (size == 0) {
-        fprintf(stderr, "ERROR:%d: file empty\n", __LINE__);
-        fclose(image->fileHandle);
-        return -1;
-    }
-    image->fileSize = size;
-    return 0;
-}
-*/
+
 static int image_map_file_src_into(Image* image, void **buf) {
     int fd = open(image->fileName, O_RDONLY);
     if (fd == -1) {
@@ -395,15 +376,15 @@ static int image_read_file_src_into(Image* image, void **buf) {
 */
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
 static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
-    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_RGB;
+    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_BGRX;
     tjhandle tjh = NULL;
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
     tj3Set(tjh, TJPARAM_STOPONWARNING, 1);
     tj3Set(tjh, TJPARAM_NOREALLOC,     1);
     tj3Set(tjh, TJPARAM_MAXMEMORY,     0);
-    tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
-    // tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
+    // tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
+    tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
 
     if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
@@ -421,8 +402,8 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     }
     printf("precision: %d colorspace: %d\n", jpegPrecision, colorspace);
 
-    // tjscalingfactor scalingFactor = TJUNSCALED;
-    // tjscalingfactor scalingFactor = {1,4};
+    // // tjscalingfactor scalingFactor = TJUNSCALED;
+    // tjscalingfactor scalingFactor = {1,8};
     // if (tj3SetScalingFactor(tjh, scalingFactor) < 0) {
     //     fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
     //     goto cleanup;
@@ -478,20 +459,16 @@ int is_jpeg(const unsigned char *srcBuf, size_t size) {
     return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
 }
 
+GLuint pbo;
 static int image_load_texture(Image* image) {
-    GLuint pbo;
     unsigned int texture;
     profiler("image_load_texture");
 
     glGenBuffers(1, &pbo); GLERR;
-
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
-    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 3, NULL, GL_STREAM_DRAW); GLERR;
-    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
-    // glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
-    // glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW); GLERR;
-
-    void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW); GLERR;
+    // void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
+    void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 4000 * 6000 * 4, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT); GLERR;
     profiler("image_load_texture -> map buffers");
 
     void* srcBuf = NULL;
@@ -523,11 +500,9 @@ static int image_load_texture(Image* image) {
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR); GLERR;
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); GLERR;
 
-    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1); GLERR;
-
     glTexImage2D(GL_TEXTURE_2D,
-        0, GL_RGB8, image->width, image->height,
-        0, GL_RGB, GL_UNSIGNED_BYTE, NULL
+        0, GL_BGRA, image->width, image->height,
+        0, GL_BGRA, GL_UNSIGNED_BYTE, NULL
     ); GLERR;
     glGenerateMipmap(GL_TEXTURE_2D); GLERR;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
@@ -626,7 +601,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
         return 1;
     }
-    profiler_time = clock();
+    profiler_time      = clock();
+    profiler_time_sum  = clock();
     state.isDirty      = 1;
     state.isZoom       = 0;
     state.windowWidth  = 640;
@@ -634,8 +610,6 @@ int main(int argc, char** argv) {
 
     if (!init_glfw())
         return 2;
-
-    profiler("init");
 
     if (testCycling) {
         Image t  = { .fileName = "images/architecture.jpg", .fileSize = 0 };
@@ -673,7 +647,7 @@ int main(int argc, char** argv) {
 
     // glfwWaitEventsTimeout(1);
     profiler("last mile");
-
+    printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
     while (!glfwWindowShouldClose(state.window)) {
         glClear(GL_COLOR_BUFFER_BIT);
         if (state.isDirty) {
@@ -694,9 +668,11 @@ int main(int argc, char** argv) {
             glfwPollEvents();
         else
             glfwWaitEvents();
-
     }
 
+    glDeleteShader(shaders[0].id);
+    glDeleteShader(shaders[1].id);
+    glDeleteBuffers(1, &pbo);
     glfwTerminate();
     return 0;
 }
