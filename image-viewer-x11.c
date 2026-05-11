@@ -1,0 +1,628 @@
+#define _GNU_SOURCE
+// #include "glad/glad.h"
+#include <GL/glew.h>
+#include <GL/glx.h>
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#include <GL/gl.h>
+#include <turbojpeg.h>
+#include <png.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#define len(x)  (sizeof(x) / sizeof((x)[0]))
+
+typedef struct {
+    unsigned int id;
+    int uProjection;
+    int uTime;
+    int uFlipY;
+    int uSize;
+    int uWSize;
+    int uPosition;
+} Shader;
+Shader shaders[1];
+unsigned int shaderIndex = 0;
+
+typedef struct {
+    const char* fileName;
+    FILE* fileHandle;
+    long fileSize;
+    int width;
+    int height;
+    unsigned int textureId;
+    int fd;
+} Image;
+typedef GLXContext (*glXCreateContextAttribsARBProc)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
+struct State {
+    float projection[16];
+
+    double lastMouseX, lastMouseY;
+    double mouseX,     mouseY;
+    float  offsetX,    offsetY;
+
+    int windowWidth, windowHeight;
+
+    int isPanning;
+    int isDirty;
+    int isZoom;
+
+    unsigned int VAO, EBO, VBO;
+
+    Display* display;
+    Window window;
+    // EGLDisplay eglDisplay;
+    // EGLContext eglContext;
+    // EGLSurface eglSurface;
+    GLXContext context;
+
+} state;
+
+int testCycling = 0;
+
+int imageIndex = 0;
+Image imageArray[2];
+Image* image;
+
+unsigned int vertShader = 0;
+const char* vsSource = "#version 330 core\n"
+    "layout (location = 0) in vec2 aPos;\n"
+    "layout (location = 1) in vec2 aTexCoord;\n"
+    "\n"
+    "out vec2 TexCoord;\n"
+    "uniform mat4 uProjection;\n"
+    "uniform bool uFlipY;\n"
+    "uniform vec2 uSize;\n"
+    "uniform vec2 uPosition;\n"
+    "\n"
+    "void main() {\n"
+    "    vec2 scaledPos = aPos * uSize;\n"
+    "    gl_Position = uProjection * vec4(scaledPos + uPosition, 0.0, 1.0);\n"
+    "    TexCoord.x = aTexCoord.x;\n"
+    "    TexCoord.y = uFlipY ? 1.0 - aTexCoord.y : aTexCoord.y;\n"
+    "}\n";
+
+clock_t profiler_time;
+clock_t profiler_time_sum;
+#define profiler(s) { \
+    printf("> profiler: %8.2fms - %s\n", ((float)(clock() - profiler_time) / CLOCKS_PER_SEC)*1000, s); \
+    profiler_time = clock(); \
+}
+
+GLenum opengl_print_error(int line) {
+    GLenum errorCode;
+    while ((errorCode = glGetError()) != GL_NO_ERROR) {
+        const char* error;
+        switch (errorCode) {
+            case GL_INVALID_ENUM:                  error = "INVALID_ENUM"; break;
+            case GL_INVALID_VALUE:                 error = "INVALID_VALUE"; break;
+            case GL_INVALID_OPERATION:             error = "INVALID_OPERATION"; break;
+            case GL_OUT_OF_MEMORY:                 error = "OUT_OF_MEMORY"; break;
+            case GL_INVALID_FRAMEBUFFER_OPERATION: error = "INVALID_FRAMEBUFFER_OPERATION"; break;
+        }
+        fprintf(stderr, "GL_ERROR:%d: %s\n", line, error);
+    }
+    return errorCode;
+}
+#define GLERR opengl_print_error(__LINE__)
+
+static int shader_create(Shader* s, const char* fsSource) {
+    int success;
+    char infoLog[512];
+    unsigned int program, fragShader;
+
+    program = glCreateProgram();
+
+    fragShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragShader, 1, &fsSource, NULL);
+    glCompileShader(fragShader);
+    glGetShaderiv(fragShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragShader, 512, NULL, infoLog);
+        printf("ERROR: Shader Compilation Failed\n%s\n", infoLog);
+        return 0;
+    }
+    glAttachShader(program, fragShader);
+
+    if (!vertShader) {
+        vertShader = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vertShader, 1, &vsSource, NULL);
+        glCompileShader(vertShader);
+        glGetShaderiv(vertShader, GL_COMPILE_STATUS, &success);
+        if (!success) {
+            glGetShaderInfoLog(vertShader, 512, NULL, infoLog);
+            printf("ERROR: Shader Compilation Failed\n%s\n", infoLog);
+            return 0;
+        }
+    }
+    glAttachShader(program, vertShader);
+
+    glLinkProgram(program);
+    glDeleteShader(vertShader);
+    glDeleteShader(fragShader);
+
+    glUseProgram(program);
+    s->id          = program;
+    s->uProjection = glGetUniformLocation(s->id, "uProjection");
+    s->uTime       = glGetUniformLocation(s->id, "uTime");
+    s->uFlipY      = glGetUniformLocation(s->id, "uFlipY");
+    s->uSize       = glGetUniformLocation(s->id, "uSize");
+    s->uPosition   = glGetUniformLocation(s->id, "uPosition");
+    s->uWSize      = -1;
+
+    return 0;
+}
+
+static int shader_create_wave(Shader* s) {
+    const char* fsSource = " #version 330\n"
+    " out vec4 FragColor;\n"
+    " in vec2 TexCoord;\n"
+    " uniform sampler2D texture0;\n"
+    " uniform vec4 colDiffuse;\n"
+    " out vec4 finalColor;\n"
+    " uniform float uTime;\n"
+    " uniform vec2  uWSize;\n"
+    " uniform float freqX;\n"
+    " uniform float freqY;\n"
+    " uniform float ampX;\n"
+    " uniform float ampY;\n"
+    " uniform float speedX;\n"
+    " uniform float speedY;\n"
+    " void main()\n"
+    " {\n"
+    "     float pixelWidth = 1.0/uWSize.x;\n"
+    "     float pixelHeight = 1.0/uWSize.y;\n"
+    "     float aspect = pixelHeight/pixelWidth;\n"
+    "     float boxLeft = 0.0;\n"
+    "     float boxTop = 0.0;\n"
+    "     vec2 p = TexCoord;\n"
+    "     p.x += cos((TexCoord.y - boxTop)*freqX/(pixelWidth*750.0) + (uTime*speedX))*ampX*pixelWidth;\n"
+    "     p.y += sin((TexCoord.x - boxLeft)*freqY*aspect/(pixelHeight*750.0) + (uTime*speedY))*ampY*pixelHeight;\n"
+    "     finalColor = texture(texture0, p);\n"
+    " }\n";
+
+    shader_create(s, fsSource);
+    glUseProgram(s->id);
+
+    int freqXLoc  = glGetUniformLocation(s->id, "freqX");
+    int freqYLoc  = glGetUniformLocation(s->id, "freqY");
+    int ampXLoc   = glGetUniformLocation(s->id, "ampX");
+    int ampYLoc   = glGetUniformLocation(s->id, "ampY");
+    int speedXLoc = glGetUniformLocation(s->id, "speedX");
+    int speedYLoc = glGetUniformLocation(s->id, "speedY");
+    int uWSizeLoc = glGetUniformLocation(s->id,  "uWSize");
+
+    float freqX  = 25.0f;
+    float freqY  = 25.0f;
+    float ampX   = 5.0f;
+    float ampY   = 5.0f;
+    float speedX = 8.0f;
+    float speedY = 8.0f;
+
+    glUniform2f(uWSizeLoc, (float)state.windowWidth, (float)state.windowHeight);
+    glUniform1f(freqXLoc,  freqX);
+    glUniform1f(freqYLoc,  freqY);
+    glUniform1f(ampXLoc,   ampX);
+    glUniform1f(ampYLoc,   ampY);
+    glUniform1f(speedXLoc, speedX);
+    glUniform1f(speedYLoc, speedY);
+
+    s->uWSize = uWSizeLoc;
+
+    return 0;
+}
+
+static int shader_create_default(Shader* s) {
+    const char* fsSource = "#version 330 core\n"
+        "out vec4 FragColor;\n"
+        "in vec2 TexCoord;\n"
+        "uniform sampler2D ourTexture;\n"
+        "void main() {\n"
+        "   FragColor = texture(ourTexture, TexCoord);\n"
+        "}\n";
+    shader_create(s, fsSource);
+    return 0;
+}
+
+static int image_map_file_src_into(Image* image, void **buf) {
+    int fd = open(image->fileName, O_RDONLY);
+    if (fd == -1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    size_t filesize = st.st_size;
+
+    *buf = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (*buf == MAP_FAILED) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    image->fileSize = st.st_size;
+    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
+
+    return 0;
+}
+
+// https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
+static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
+    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_BGRX;
+    tjhandle tjh = NULL;
+
+    tjh = tj3Init(TJINIT_DECOMPRESS);
+    tj3Set(tjh, TJPARAM_STOPONWARNING, 1);
+    tj3Set(tjh, TJPARAM_NOREALLOC,     1);
+    tj3Set(tjh, TJPARAM_MAXMEMORY,     0);
+    // tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
+    tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
+
+    if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+        goto cleanup;
+    }
+    profiler("tj3DecompressHeader");
+
+    w = tj3Get(tjh, TJPARAM_JPEGWIDTH);
+    h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
+    jpegPrecision = tj3Get(tjh, TJPARAM_PRECISION);
+    colorspace = tj3Get(tjh, TJPARAM_COLORSPACE);
+    if (colorspace == TJCS_CMYK || colorspace == TJCS_YCCK) {
+        fprintf(stderr, "ERROR:%d: CMYK/YCCK pixel formats not supported.\n", __LINE__);
+        goto cleanup;
+    }
+    printf("precision: %d colorspace: %d\n", jpegPrecision, colorspace);
+
+    // // tjscalingfactor scalingFactor = TJUNSCALED;
+    // tjscalingfactor scalingFactor = {1,8};
+    // if (tj3SetScalingFactor(tjh, scalingFactor) < 0) {
+    //     fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+    //     goto cleanup;
+    // }
+    // w = TJSCALED(w, scalingFactor);
+    // h = TJSCALED(h, scalingFactor);
+
+    ret = tj3Decompress8(tjh, srcBuf, image->fileSize, dstBuf, 0, pixelFormat);
+    profiler("tj3Decompress8");
+    if (ret < 0) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+        ret = -1;
+        goto cleanup;
+    }
+
+    ret           = 0;
+    image->width  = w;
+    image->height = h;
+
+  cleanup:
+    munmap(srcBuf, image->fileSize);
+    tj3Destroy(tjh);
+    if (image->fileHandle) fclose(image->fileHandle);
+    return ret;
+}
+
+static unsigned int image_read_png_into(Image* image, void *srcBuf, void *dstBuf) {
+    png_image pngImage;
+    memset(&pngImage, 0, (sizeof pngImage));
+    pngImage.version = PNG_IMAGE_VERSION;
+
+    if (!png_image_begin_read_from_memory(&pngImage, srcBuf, image->fileSize)) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, pngImage.message);
+        return -1;
+    }
+    profiler("png_image_begin_read_from_memory");
+
+    pngImage.format = PNG_FORMAT_RGB;
+    if (!png_image_finish_read(&pngImage, 0, dstBuf, 0, NULL)) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, pngImage.message);
+        return -1;
+    }
+    profiler("png_image_finish_read");
+
+    image->width  = pngImage.width;
+    image->height = pngImage.height;
+
+    return 0;
+}
+
+int is_jpeg(const unsigned char *srcBuf, size_t size) {
+    if (size < 3) return 0;
+    return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
+}
+
+static int image_load_texture(Image* image) {
+    GLuint pbo;
+    unsigned int texture;
+    profiler("image_load_texture");
+
+    glGenBuffers(1, &pbo); GLERR;
+
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW); GLERR;
+
+    // void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
+    void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 4000 * 6000 * 4, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT); GLERR;
+
+    profiler("image_load_texture -> map buffers");
+
+    void* srcBuf = NULL;
+    if (image_map_file_src_into(image, &srcBuf) < 0) {
+        return -1;
+    }
+    profiler("image_map_file_src_into");
+
+    if (png_sig_cmp(srcBuf, 0, 8) == 0) {
+        if (image_read_png_into(image, srcBuf, dstBuf) < 0) {
+            return -1;
+        }
+    } else if (is_jpeg(srcBuf, image->fileSize)) {
+        if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
+            return -1;
+        }
+    } else {
+        fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
+    }
+    printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
+
+    glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER); GLERR;
+    profiler("image_load_texture -> unmap buffers");
+
+    glGenTextures(1, &texture); GLERR;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
+    glBindTexture(GL_TEXTURE_2D, texture); GLERR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); GLERR;
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR); GLERR;
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); GLERR;
+
+    // glPixelStorei(GL_UNPACK_ALIGNMENT, 1); GLERR;
+
+    glTexImage2D(GL_TEXTURE_2D,
+        0, GL_BGRA, image->width, image->height,
+        0, GL_BGRA, GL_UNSIGNED_BYTE, NULL
+    ); GLERR;
+    glGenerateMipmap(GL_TEXTURE_2D); GLERR;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
+    profiler("image_load_texture -> texture");
+
+    image->textureId = texture;
+
+    return 0;
+}
+
+static void init_vao() {
+    float vertices[] = {
+        1.0f, 1.0f,  1.0f, 1.0f, // Top Right
+        1.0f, 0.0f,  1.0f, 0.0f, // Bottom Right
+        0.0f, 0.0f,  0.0f, 0.0f, // Bottom Left
+        0.0f, 1.0f,  0.0f, 1.0f  // Top Left
+    };
+    unsigned int indices[] = {
+        0, 1, 3,
+        1, 2, 3
+    };
+    glGenVertexArrays(1, &state.VAO);
+    glGenBuffers(1, &state.VBO);
+    glGenBuffers(1, &state.EBO);
+    glBindVertexArray(state.VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, state.VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+}
+
+static void update_mouse_panning(const Image* image) {
+    if (!state.isPanning)
+        return;
+    state.offsetX -= (float)(state.mouseX - state.lastMouseX);
+    state.offsetY += (float)(state.mouseY - state.lastMouseY);
+    if (state.offsetX > image->width / 2.0f) state.offsetX = image->width / 2.0f;
+    if (state.offsetX < -image->width / 2.0f) state.offsetX = -image->width / 2.0f;
+    if (state.offsetY > image->height / 2.0f) state.offsetY = image->height / 2.0f;
+    if (state.offsetY < -image->height / 2.0f) state.offsetY = -image->height / 2.0f;
+    state.lastMouseX = state.mouseX;
+    state.lastMouseY = state.mouseY;
+}
+
+static void update_ortho_matrix(float* m, float l, float r, float b, float t) {
+    for(int i = 0; i < 16; i++) m[i] = 0.0f;
+    m[0]  = 2.0f / (r - l);
+    m[5]  = 2.0f / (t - b);
+    m[10] = -1.0f;
+    m[12] = -(r + l) / (r - l);
+    m[13] = -(t + b) / (t - b);
+    m[15] = 1.0f;
+}
+
+static void update_projection(const Image* image) {
+    float left, right, bottom, top;
+
+    if (state.isZoom) {
+        float centerX = (image->width / 2.0f) + state.offsetX;
+        float centerY = (image->height / 2.0f) + state.offsetY;
+
+        left   = centerX - (state.windowWidth / 2.0f);
+        right  = centerX + (state.windowWidth / 2.0f);
+        bottom = centerY - (state.windowHeight / 2.0f);
+        top    = centerY + (state.windowHeight / 2.0f);
+    } else {
+        float windowAspect = (float)state.windowWidth / (float)state.windowHeight;
+        float imageAspect = (float)image->width / (float)image->height;
+        if (windowAspect > imageAspect) {
+            float worldWidth = image->height * windowAspect;
+            left = -(worldWidth - image->width) / 2.0f;
+            right = image->width + (worldWidth - image->width) / 2.0f;
+            bottom = 0.0f;
+            top = (float)image->height;
+        } else {
+            float worldHeight = image->width / windowAspect;
+            left = 0.0f;
+            right = (float)image->width;
+            bottom = -(worldHeight - image->height) / 2.0f;
+            top = image->height + (worldHeight - image->height) / 2.0f;
+        }
+    }
+    update_ortho_matrix(state.projection, left, right, bottom, top);
+}
+
+void create_window(int width, int height) {
+    state.display = XOpenDisplay(NULL);
+        profiler("XOpenDisplay");
+
+    // int visual_attribs[] = {
+    //     // GLX_X_RENDERABLE, 1,
+    //     // // GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+    //     // GLX_RENDER_TYPE, GLX_RGBA_BIT,
+    //     // GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR,
+    //     // GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
+    //     // GLX_ALPHA_SIZE, 8, GLX_DEPTH_SIZE, 24,
+    //     // // GLX_ALPHA_SIZE, 0, GLX_DEPTH_SIZE, 0,
+    //     // GLX_DOUBLEBUFFER, 1,
+
+    //     // GLX_DRAWABLE_TYPE, GLX_PBUFFER_BIT,
+    //     // GLX_CONFIG_CAVEAT, GLX_NONE,
+    //     // GLX_TRANSPARENT_TYPE, GLX_NONE,
+    //     // GLX_LEVEL, 0,
+    //     // GLX_DEPTH_SIZE, 0,
+
+    //     GLX_NONE
+    // };
+
+    int fbcount;
+    // GLXFBConfig* fbc = glXChooseFBConfig(state.display, DefaultScreen(state.display), visual_attribs, &fbcount);
+    int hint_attribs[] = { GLX_VISUAL_ID, 757, GLX_NONE };
+    int scr = DefaultScreen(state.display);
+    profiler("DefScr");
+    GLXFBConfig* fbc = glXChooseFBConfig(state.display, scr, hint_attribs, &fbcount);
+    profiler("glXChooseFBConfig");
+
+    XVisualInfo* vi = glXGetVisualFromFBConfig(state.display, fbc[0]);
+    profiler("glXGetVisualFromFBConfig");
+
+    XSetWindowAttributes swa = {
+        .colormap = XCreateColormap(state.display, RootWindow(state.display, vi->screen), vi->visual, AllocNone),
+        .event_mask = KeyPressMask
+    };
+    profiler("XCreateColormap");
+
+    state.window = XCreateWindow(state.display, RootWindow(state.display, vi->screen),
+                                0, 0, width, height, 0, vi->depth, InputOutput,
+                                vi->visual, CWColormap | CWEventMask, &swa);
+    XMapWindow(state.display, state.window);
+    profiler("XMapWindow");
+
+    glXCreateContextAttribsARBProc glXCreateContextAttribsARB = 0;
+    glXCreateContextAttribsARB = (glXCreateContextAttribsARBProc)glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
+
+    int context_attribs[] = {
+        GLX_CONTEXT_MAJOR_VERSION_ARB, 4,
+        GLX_CONTEXT_MINOR_VERSION_ARB, 3,
+        GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+        // EGL_NATIVE_RENDERABLE,  1,
+        None
+    };
+
+    state.context = glXCreateContextAttribsARB(state.display, fbc[0], NULL, 1, context_attribs);
+    glXMakeCurrent(state.display, state.window, state.context);
+    glewInit();
+    profiler("glewInit");
+
+    state.windowWidth = width;
+    state.windowHeight = height;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
+        return 1;
+    }
+    profiler_time      = clock();
+    profiler_time_sum  = clock();
+    state.isDirty      = 1;
+    state.isZoom       = 0;
+    state.windowWidth  = 800;
+    state.windowHeight = 600;
+
+    create_window(800, 600);
+    profiler("create_window");
+
+    printf("GL_VERSION: %s\n",        glGetString(GL_VERSION));
+    printf("GL_RENDERER: %s\n",       glGetString(GL_RENDERER));
+    printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
+
+
+    Image t = { .fileName = argv[1], .fileSize = 0 };
+    imageArray[0] = t;
+    image_load_texture(&imageArray[0]);
+    image = &imageArray[0];
+    if (!image->textureId) {
+        return 3;
+    }
+    shader_create_default(&shaders[0]);
+    profiler("shader_create_*");
+
+    init_vao();
+    profiler("init_vao");
+
+    glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
+
+    int i = 0;
+    for (;i < 1; i++) {
+        glUseProgram(shaders[i].id); GLERR;
+        glUniform2f(shaders[i].uPosition, 0.0f, 0.0f); GLERR;
+        glUniform1i(shaders[i].uFlipY,    1); GLERR;
+        glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height); GLERR;
+    }
+    glUseProgram(shaders[shaderIndex].id); GLERR;
+
+    int running = 1;
+    XEvent event;
+
+    printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
+
+    while (running) {
+        while (XPending(state.display)) {
+            XNextEvent(state.display, &event);
+            if (event.type == KeyPress) {
+                if (XLookupKeysym(&event.xkey, 0) == XK_Escape) {
+                    running = 0;
+                }
+            }
+        }
+        if (state.isDirty) {
+            update_projection(image);
+            glUniformMatrix4fv(shaders[shaderIndex].uProjection, 1, GL_FALSE, state.projection);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+            glXSwapBuffers(state.display, state.window);
+            state.isDirty = 0;
+
+        }
+    }
+
+    glXMakeCurrent(state.display, None, NULL);
+    glXDestroyContext(state.display, state.context);
+    XCloseDisplay(state.display);
+    return 0;
+}
