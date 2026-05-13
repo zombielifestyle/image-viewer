@@ -13,8 +13,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
-#define len(x)  (sizeof(x) / sizeof((x)[0]))
-
 typedef struct {
     unsigned int id;
     int uProjection;
@@ -44,18 +42,27 @@ struct State {
     double mouseX,     mouseY;
     float  offsetX,    offsetY;
 
-    int windowWidth, windowHeight;
+    int width,        height;
+    int windowWidth,  windowHeight;
 
     int isPanning;
     int isDirty;
     int isZoom;
+    int isMaximized;
+    int testCycling;
 
     unsigned int VAO, EBO, VBO;
     GLFWwindow* window;
 
-} state;
+    double lastClickTime;
+};
 
-int testCycling = 0;
+struct State state = {
+    .windowWidth  = 640, .width  = 640,
+    .windowHeight = 480, .height = 480,
+    .isDirty      = 1,
+    .testCycling  = 1,
+};
 
 int imageIndex = 0;
 Image imageArray[2];
@@ -78,6 +85,8 @@ const char* vsSource = "#version 330 core\n"
     "    TexCoord.x = aTexCoord.x;\n"
     "    TexCoord.y = uFlipY ? 1.0 - aTexCoord.y : aTexCoord.y;\n"
     "}\n";
+
+#define len(x)  (sizeof(x) / sizeof((x)[0]))
 
 clock_t profiler_time;
 clock_t profiler_time_sum;
@@ -103,27 +112,48 @@ GLenum opengl_print_error(int line) {
 }
 #define GLERR opengl_print_error(__LINE__)
 
+static void window_size_callback(GLFWwindow* window, int width, int height);
+static void iv_win_maximize_toggle(GLFWwindow* window) {
+    if (state.isMaximized) {
+        glfwSetWindowMonitor(window, NULL, 0, 0, state.windowWidth, state.windowHeight, 60);
+        // BUG: WSLg + WAYLAND doesn't trigger size callback
+        if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+            window_size_callback(window, state.windowWidth, state.windowHeight);
+        }
+        state.isMaximized = 0;
+    } else {
+        const GLFWvidmode* vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+        glfwSetWindowMonitor(window, glfwGetPrimaryMonitor(),
+            0, 0, vidmode->width, vidmode->height,
+            vidmode->refreshRate
+        );
+        state.isMaximized = 1;
+    }
+}
+
 static void error_callback(int error, const char* description) {
-    fprintf(stderr, "Error: %s\n", description);
+    fprintf(stderr, "GLFW Error: %s\n", description);
 }
 
 static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+    if (action != GLFW_RELEASE)
+        return;
+    if (key == GLFW_KEY_ESCAPE) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
-    if (key == GLFW_KEY_SPACE && action == GLFW_RELEASE) {
+    } else if (key == GLFW_KEY_F || key == GLFW_KEY_F11) {
+        iv_win_maximize_toggle(window);
+    } else if (key == GLFW_KEY_SPACE) {
         state.isDirty = 1;
         state.isZoom = state.isZoom ? 0 : 1;
-    }
-    if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
+    } else if (key == GLFW_KEY_S) {
         state.isDirty = 1;
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
         glUseProgram(shaders[shaderIndex].id); GLERR;
         glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
         if (shaders[shaderIndex].uWSize != -1) {
-            glUniform2f(shaders[shaderIndex].uWSize, (float)state.windowWidth, (float)state.windowHeight); GLERR;
+            glUniform2f(shaders[shaderIndex].uWSize, (float)state.width, (float)state.height); GLERR;
         }
-    }
-    if (testCycling && (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
+    } else if (state.testCycling && (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT)) {
         state.isDirty = 1;
         imageIndex = imageIndex+1 >= len(imageArray) ? 0 : imageIndex + 1;
         image = &imageArray[imageIndex];
@@ -140,28 +170,35 @@ static void cursor_position_callback(GLFWwindow* window, double x, double y) {
 }
 
 static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    if (state.isZoom) {
-        if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
-            glfwSetCursorPosCallback(window, cursor_position_callback);
-            double x, y;
-            glfwGetCursorPos(window, &x, &y);
-            state.mouseX     = x;
-            state.mouseY     = y;
-            state.lastMouseX = x;
-            state.lastMouseY = y;
-            state.isPanning  = 1;
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_RELEASE) {
+            double currentTime = glfwGetTime();
+            if (currentTime - state.lastClickTime < 0.3) {
+                iv_win_maximize_toggle(window);
+            }
+            state.lastClickTime = glfwGetTime();
         }
-        if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
-            glfwSetCursorPosCallback(window, NULL);
-            state.isPanning = 0;
+        if (state.isZoom) {
+            if (action == GLFW_PRESS) {
+                glfwSetCursorPosCallback(window, cursor_position_callback);
+                double x, y;
+                glfwGetCursorPos(window, &x, &y);
+                state.lastMouseX = state.mouseX = x;
+                state.lastMouseY = state.mouseY = y;
+                state.isPanning  = 1;
+            } else if (action == GLFW_RELEASE) {
+                glfwSetCursorPosCallback(window, NULL);
+                state.isPanning = 0;
+            }
         }
     }
 }
 
 static void window_size_callback(GLFWwindow* window, int width, int height) {
-    state.isDirty      = 1;
-    state.windowWidth  = width;
-    state.windowHeight = height;
+    state.isDirty = 1;
+    state.width   = width;
+    state.height  = height;
+    printf("resize: %d, %d\n", width, height);
     int w, h;
     glfwGetFramebufferSize(window, &w, &h); GLERR;
     glViewport(0, 0, w, h); GLERR;
@@ -169,10 +206,10 @@ static void window_size_callback(GLFWwindow* window, int width, int height) {
 
 static int init_glfw() {
     glfwSetErrorCallback(error_callback);
-    // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
-    glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
+    // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
 
     if (!glfwInit())
         return -1;
@@ -186,11 +223,12 @@ static int init_glfw() {
 
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
 
-    state.window = glfwCreateWindow(state.windowWidth, state.windowHeight, "Image Viewer", NULL, NULL);
+    state.window = glfwCreateWindow(state.width, state.height, "Image Viewer", NULL, NULL);
     if (!state.window) {
         glfwTerminate();
         return 0;
     }
+
     profiler("glfwCreateWindow");
     glfwMakeContextCurrent(state.window);
     profiler("glfwMakeContextCurrent");
@@ -304,7 +342,7 @@ static int shader_create_wave(Shader* s) {
     float speedX = 8.0f;
     float speedY = 8.0f;
 
-    glUniform2f(uWSizeLoc, (float)state.windowWidth, (float)state.windowHeight);
+    glUniform2f(uWSizeLoc, (float)state.width, (float)state.height);
     glUniform1f(freqXLoc,  freqX);
     glUniform1f(freqYLoc,  freqY);
     glUniform1f(ampXLoc,   ampX);
@@ -572,12 +610,12 @@ static void update_projection(const Image* image) {
         float centerX = (image->width / 2.0f) + state.offsetX;
         float centerY = (image->height / 2.0f) + state.offsetY;
 
-        left   = centerX - (state.windowWidth / 2.0f);
-        right  = centerX + (state.windowWidth / 2.0f);
-        bottom = centerY - (state.windowHeight / 2.0f);
-        top    = centerY + (state.windowHeight / 2.0f);
+        left   = centerX - (state.width / 2.0f);
+        right  = centerX + (state.width / 2.0f);
+        bottom = centerY - (state.height / 2.0f);
+        top    = centerY + (state.height / 2.0f);
     } else {
-        float windowAspect = (float)state.windowWidth / (float)state.windowHeight;
+        float windowAspect = (float)state.width / (float)state.height;
         float imageAspect = (float)image->width / (float)image->height;
         if (windowAspect > imageAspect) {
             float worldWidth = image->height * windowAspect;
@@ -601,17 +639,12 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
         return 1;
     }
-    profiler_time      = clock();
-    profiler_time_sum  = clock();
-    state.isDirty      = 1;
-    state.isZoom       = 0;
-    state.windowWidth  = 640;
-    state.windowHeight = 480;
+    profiler_time_sum = profiler_time = clock();
 
     if (!init_glfw())
         return 2;
 
-    if (testCycling) {
+    if (state.testCycling) {
         Image t  = { .fileName = "images/architecture.jpg", .fileSize = 0 };
         imageArray[0] = t;
         Image t2 = { .fileName = "images/lost-place.jpg",   .fileSize = 0 };
