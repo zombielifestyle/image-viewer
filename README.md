@@ -1,15 +1,32 @@
-# image viewer
+# Image Viewer
 
-learning project. very simple image viewer using glfw, GL, stb. there is also a braindead raylib version.
+Simple image viewer using glfw, GL.
 
-## usage
+Learning Project, may be broken at any time.
+
+## Build
+
+./vendorize.sh can pull deps. Untested with great care.
+
+	`make run`
+
+## Usage
 	./image-viewer [image]
 
-`space` to toggle fit/orginal size. in original size mode use `LMB` for panning.
+## Controls
+ * `R`: toggle fitted mode
+ * `S`: toggle wave shader for lulz
+ * `SPACE`: panning
+ * `MOUSE WHEEL`: zooming
+ * `F`, `F11`, `LMB` double click: maximize / restore
+ * `LEFT` / `RIGHT`: next image (not really implemented yet)
 
-## ai disclosure
+Image formats:
+ * jpeg
+ * png
+ * more soon (TM)
 
-heavily AI chatbot (gemini) assisted. worked my way up, step by step.
-eventually i had to refactor the copy and paste mess; reworked the input handling and took care to get the cpu usage to zero if nothing is happening.
+## AI Disclosure
 
-quite surprised that gemini can blindly guide one on opengl code and not constantly screw up.
+I currently don't use coding agents. I use AI chatbots for research, learning and code snippets.
+The presence of AI code is relevant, incompetence of AI as well. Code snippets are refactored / restructured / rewritten to make sense.

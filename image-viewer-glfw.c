@@ -38,18 +38,20 @@ typedef struct {
 struct State {
     float projection[16];
 
-    double lastMouseX, lastMouseY;
-    double mouseX,     mouseY;
-    float  offsetX,    offsetY;
+    double mouseY,  mouseX;
+    float  cameraX, cameraY;
+    float  offsetX, offsetY;
 
-    int width,        height;
-    int windowWidth,  windowHeight;
+    int width,       height;
+    int windowWidth, windowHeight;
 
     int isPanning;
     int isDirty;
     int isZoom;
     int isMaximized;
+    int isFitted;
     int testCycling;
+    float zoom, zoomFactor;
 
     unsigned int VAO, EBO, VBO;
     GLFWwindow* window;
@@ -58,16 +60,20 @@ struct State {
 };
 
 struct State state = {
-    .windowWidth  = 640, .width  = 640,
-    .windowHeight = 480, .height = 480,
+    .windowWidth  = 420, .width  = 420,
+    .windowHeight = 500, .height = 500,
     .isDirty      = 1,
-    .testCycling  = 1,
+    .isFitted     = 1,
+    .testCycling  = 0,
+    .zoom         = 1.0f,
+    .zoomFactor   = 1.2f,
 };
 
 int imageIndex = 0;
 Image imageArray[2];
 Image* image;
 
+GLuint pbo;
 unsigned int vertShader = 0;
 const char* vsSource = "#version 330 core\n"
     "layout (location = 0) in vec2 aPos;\n"
@@ -112,13 +118,14 @@ GLenum opengl_print_error(int line) {
 }
 #define GLERR opengl_print_error(__LINE__)
 
-static void window_size_callback(GLFWwindow* window, int width, int height);
+static void iv_window_size_callback(GLFWwindow* window, int width, int height);
+
 static void iv_win_maximize_toggle(GLFWwindow* window) {
     if (state.isMaximized) {
         glfwSetWindowMonitor(window, NULL, 0, 0, state.windowWidth, state.windowHeight, 60);
         // BUG: WSLg + WAYLAND doesn't trigger size callback
         if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
-            window_size_callback(window, state.windowWidth, state.windowHeight);
+            iv_window_size_callback(window, state.windowWidth, state.windowHeight);
         }
         state.isMaximized = 0;
     } else {
@@ -131,45 +138,166 @@ static void iv_win_maximize_toggle(GLFWwindow* window) {
     }
 }
 
-static void error_callback(int error, const char* description) {
+static void iv_camera_update_pos(float screenX, float screenY, float oldScreenX, float oldScreenY) {
+    float screenWidth  = (float)state.width;
+    float screenHeight = (float)state.height;
+
+    float deltaX = screenX - oldScreenX;
+    float deltaY = screenY - oldScreenY;
+
+    if (deltaX == 0.0f && deltaY == 0.0f) {
+        return;
+    }
+
+    float windowAspect = screenWidth / screenHeight;
+    float worldHeight  = (float)image->height / state.zoom;
+    float worldWidth   = worldHeight * windowAspect;
+
+    float worldX = worldWidth  / screenWidth;
+    float worldY = worldHeight / screenHeight;
+
+    state.cameraX -= deltaX * worldX;
+    state.cameraY += deltaY * worldY;
+
+    state.isDirty = 1;
+}
+
+static void iv_camera_update_zoom(float screenX, float screenY, float delta) {
+    float screenWidth  = (float)state.width;
+    float screenHeight = (float)state.height;
+
+    float aspectRatio = screenWidth / screenHeight;
+    float worldHeight = (float)image->height / state.zoom;
+    float worldWidth  = worldHeight * aspectRatio;
+
+    float left   = state.cameraX - (worldWidth  / 2.0f);
+    float bottom = state.cameraY - (worldHeight / 2.0f);
+
+    float worldX = left   + (screenX / screenWidth) * worldWidth;
+    float worldY = bottom + (1.0f - (screenY / screenHeight)) * worldHeight;
+
+    if (delta > 0) {
+        state.zoom *= state.zoomFactor;
+    } else {
+        state.zoom /= state.zoomFactor;
+    }
+
+    if (state.zoom < 0.5f)   state.zoom = 0.5f;
+    if (state.zoom > 100.0f) state.zoom = 100.0f;
+
+    float newWorldHeight = (float)image->height / state.zoom;
+    float newWorldWidth  = newWorldHeight * aspectRatio;
+
+    state.cameraX = worldX - ((screenX / screenWidth) - 0.5f) * newWorldWidth;
+    state.cameraY = worldY - ((1.0f - (screenY / screenHeight)) - 0.5f) * newWorldHeight;
+
+    state.isDirty = 1;
+}
+
+static void iv_camera_update_projection_matrix(float* m, float l, float r, float b, float t) {
+    for(int i = 0; i < 16; i++) m[i] = 0.0f;
+    m[0]  = 2.0f / (r - l);
+    m[5]  = 2.0f / (t - b);
+    m[10] = -1.0f;
+    m[12] = -(r + l) / (r - l);
+    m[13] = -(t + b) / (t - b);
+    m[15] = 1.0f;
+}
+
+static void iv_camera_update_projection(const Image* image) {
+    float aspectRatio = (float)state.width / (float)state.height;
+
+    float worldHeight = (float)image->height / state.zoom;
+    float worldWidth  = worldHeight * aspectRatio;
+
+    float l = state.cameraX - (worldWidth  / 2.0f);
+    float r = state.cameraX + (worldWidth  / 2.0f);
+    float b = state.cameraY - (worldHeight / 2.0f);
+    float t = state.cameraY + (worldHeight / 2.0f);
+
+    iv_camera_update_projection_matrix(state.projection, l, r, b, t);
+}
+
+static void iv_camera_center(Image* img) {
+    state.cameraX = img->width  / 2.0f;
+    state.cameraY = img->height / 2.0f;
+    state.isDirty = 1;
+}
+
+static void iv_camera_fit(Image* img) {
+    float windowAspect = (float)state.width / (float)state.height;
+    float imageAspect  = (float)img->width  / (float)img->height;
+
+    if (windowAspect >= imageAspect) {
+        state.zoom = 1.0f;
+    } else {
+        state.zoom = windowAspect / imageAspect;
+    }
+
+    iv_camera_center(img);
+}
+
+static void iv_camera_unfit(Image* img) {
+    float windowAspect = (float)state.width / (float)state.height;
+    float imageAspect  = (float)img->width  / (float)img->height;
+
+    state.zoom = windowAspect / imageAspect;
+    iv_camera_center(img);
+}
+
+static void iv_error_callback(int error, const char* description) {
     fprintf(stderr, "GLFW Error: %s\n", description);
 }
 
-static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    if (action != GLFW_RELEASE)
-        return;
-    if (key == GLFW_KEY_ESCAPE) {
+static void iv_cursor_position_callback(GLFWwindow* window, double x, double y) {
+    if (state.isPanning) {
+        iv_camera_update_pos((float)x, (float)y, (float)state.mouseX, (float)state.mouseY);
+    }
+    state.mouseX = x;
+    state.mouseY = y;
+}
+
+static void iv_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
-    } else if (key == GLFW_KEY_F || key == GLFW_KEY_F11) {
+    } else if ((key == GLFW_KEY_F || key == GLFW_KEY_F11) && action == GLFW_RELEASE) {
         iv_win_maximize_toggle(window);
-    } else if (key == GLFW_KEY_SPACE) {
-        state.isDirty = 1;
-        state.isZoom = state.isZoom ? 0 : 1;
-    } else if (key == GLFW_KEY_S) {
-        state.isDirty = 1;
+    } else if (key == GLFW_KEY_C && action == GLFW_RELEASE) {
+        iv_camera_center(image);
+    } else if (key == GLFW_KEY_R && action == GLFW_RELEASE) {
+        if (state.isFitted) {
+            iv_camera_unfit(image);
+            state.isFitted = 0;
+        } else {
+            iv_camera_fit(image);
+            state.isFitted = 1;
+        }
+    } else if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
         glUseProgram(shaders[shaderIndex].id); GLERR;
         glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
         if (shaders[shaderIndex].uWSize != -1) {
             glUniform2f(shaders[shaderIndex].uWSize, (float)state.width, (float)state.height); GLERR;
         }
-    } else if (state.testCycling && (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT)) {
         state.isDirty = 1;
+    } else if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
+        glfwGetCursorPos(window, &state.mouseX, &state.mouseY);
+        glfwSetCursorPosCallback(window, iv_cursor_position_callback);
+        state.isPanning = 1;
+    } else if (key == GLFW_KEY_SPACE && action == GLFW_RELEASE) {
+        glfwSetCursorPosCallback(window, NULL);
+        state.isPanning = 0;
+    } else if (state.testCycling && (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
         imageIndex = imageIndex+1 >= len(imageArray) ? 0 : imageIndex + 1;
         image = &imageArray[imageIndex];
         glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
         glUseProgram(shaders[shaderIndex].id); GLERR;
         glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
+        state.isDirty = 1;
     }
 }
 
-static void cursor_position_callback(GLFWwindow* window, double x, double y) {
-    state.mouseX  = x;
-    state.mouseY  = y;
-    state.isDirty = 1;
-}
-
-static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+static void iv_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_RELEASE) {
             double currentTime = glfwGetTime();
@@ -178,23 +306,15 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
             }
             state.lastClickTime = glfwGetTime();
         }
-        if (state.isZoom) {
-            if (action == GLFW_PRESS) {
-                glfwSetCursorPosCallback(window, cursor_position_callback);
-                double x, y;
-                glfwGetCursorPos(window, &x, &y);
-                state.lastMouseX = state.mouseX = x;
-                state.lastMouseY = state.mouseY = y;
-                state.isPanning  = 1;
-            } else if (action == GLFW_RELEASE) {
-                glfwSetCursorPosCallback(window, NULL);
-                state.isPanning = 0;
-            }
-        }
     }
 }
 
-static void window_size_callback(GLFWwindow* window, int width, int height) {
+static void iv_window_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    glfwGetCursorPos(window, &state.mouseX, &state.mouseY);
+    iv_camera_update_zoom((float)state.mouseX, (float)state.mouseY, yoffset);
+}
+
+static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
     state.isDirty = 1;
     state.width   = width;
     state.height  = height;
@@ -205,7 +325,7 @@ static void window_size_callback(GLFWwindow* window, int width, int height) {
 }
 
 static int init_glfw() {
-    glfwSetErrorCallback(error_callback);
+    glfwSetErrorCallback(iv_error_callback);
     glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
     // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
@@ -241,9 +361,10 @@ static int init_glfw() {
     printf("GL_RENDERER: %s\n",       glGetString(GL_RENDERER));
     printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
 
-    glfwSetMouseButtonCallback(state.window, mouse_button_callback);
-    glfwSetKeyCallback(state.window, key_callback);
-    glfwSetWindowSizeCallback(state.window, window_size_callback);
+    glfwSetMouseButtonCallback(state.window, iv_mouse_button_callback);
+    glfwSetKeyCallback(state.window, iv_key_callback);
+    glfwSetWindowSizeCallback(state.window, iv_window_size_callback);
+    glfwSetScrollCallback(state.window, iv_window_scroll_callback);
     // glfwSwapInterval(1);
 
     return 1;
@@ -492,12 +613,11 @@ static unsigned int image_read_png_into(Image* image, void *srcBuf, void *dstBuf
     return 0;
 }
 
-int is_jpeg(const unsigned char *srcBuf, size_t size) {
+static int is_jpeg(const unsigned char *srcBuf, size_t size) {
     if (size < 3) return 0;
     return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
 }
 
-GLuint pbo;
 static int image_load_texture(Image* image) {
     unsigned int texture;
     profiler("image_load_texture");
@@ -537,6 +657,8 @@ static int image_load_texture(Image* image) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); GLERR;
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR); GLERR;
     // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); GLERR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glTexImage2D(GL_TEXTURE_2D,
         0, GL_BGRA, image->width, image->height,
@@ -580,60 +702,6 @@ static void init_vao() {
     glEnableVertexAttribArray(1);
 }
 
-static void update_mouse_panning(const Image* image) {
-    if (!state.isPanning)
-        return;
-    state.offsetX -= (float)(state.mouseX - state.lastMouseX);
-    state.offsetY += (float)(state.mouseY - state.lastMouseY);
-    if (state.offsetX > image->width / 2.0f) state.offsetX = image->width / 2.0f;
-    if (state.offsetX < -image->width / 2.0f) state.offsetX = -image->width / 2.0f;
-    if (state.offsetY > image->height / 2.0f) state.offsetY = image->height / 2.0f;
-    if (state.offsetY < -image->height / 2.0f) state.offsetY = -image->height / 2.0f;
-    state.lastMouseX = state.mouseX;
-    state.lastMouseY = state.mouseY;
-}
-
-static void update_ortho_matrix(float* m, float l, float r, float b, float t) {
-    for(int i = 0; i < 16; i++) m[i] = 0.0f;
-    m[0]  = 2.0f / (r - l);
-    m[5]  = 2.0f / (t - b);
-    m[10] = -1.0f;
-    m[12] = -(r + l) / (r - l);
-    m[13] = -(t + b) / (t - b);
-    m[15] = 1.0f;
-}
-
-static void update_projection(const Image* image) {
-    float left, right, bottom, top;
-
-    if (state.isZoom) {
-        float centerX = (image->width / 2.0f) + state.offsetX;
-        float centerY = (image->height / 2.0f) + state.offsetY;
-
-        left   = centerX - (state.width / 2.0f);
-        right  = centerX + (state.width / 2.0f);
-        bottom = centerY - (state.height / 2.0f);
-        top    = centerY + (state.height / 2.0f);
-    } else {
-        float windowAspect = (float)state.width / (float)state.height;
-        float imageAspect = (float)image->width / (float)image->height;
-        if (windowAspect > imageAspect) {
-            float worldWidth = image->height * windowAspect;
-            left = -(worldWidth - image->width) / 2.0f;
-            right = image->width + (worldWidth - image->width) / 2.0f;
-            bottom = 0.0f;
-            top = (float)image->height;
-        } else {
-            float worldHeight = image->width / windowAspect;
-            left = 0.0f;
-            right = (float)image->width;
-            bottom = -(worldHeight - image->height) / 2.0f;
-            top = image->height + (worldHeight - image->height) / 2.0f;
-        }
-    }
-    update_ortho_matrix(state.projection, left, right, bottom, top);
-}
-
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
@@ -652,7 +720,7 @@ int main(int argc, char** argv) {
         image_load_texture(&imageArray[0]);
         image_load_texture(&imageArray[1]);
     } else {
-        Image t = { .fileName = argv[1], .fileSize = 0 };
+        Image t = { .fileName = argv[1] };
         imageArray[0] = t;
         image_load_texture(&imageArray[0]);
     }
@@ -677,16 +745,24 @@ int main(int argc, char** argv) {
         glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height); GLERR;
     }
     glUseProgram(shaders[shaderIndex].id); GLERR;
-
     // glfwWaitEventsTimeout(1);
+
+    glfwSetCursorPosCallback(state.window, iv_cursor_position_callback);
+    iv_camera_fit(image);
+
     profiler("last mile");
     printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
     while (!glfwWindowShouldClose(state.window)) {
+
+        if (shaders[shaderIndex].uTime > 0 || state.isPanning)
+            glfwPollEvents();
+        else
+            glfwWaitEvents();
+
         glClear(GL_COLOR_BUFFER_BIT);
         if (state.isDirty) {
             state.isDirty = 0;
-            update_mouse_panning(image);
-            update_projection(image);
+            iv_camera_update_projection(image);
 
             glUniformMatrix4fv(shaders[shaderIndex].uProjection, 1, GL_FALSE, state.projection);
         }
@@ -696,11 +772,6 @@ int main(int argc, char** argv) {
 
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glfwSwapBuffers(state.window);
-
-        if (shaders[shaderIndex].uTime > 0)
-            glfwPollEvents();
-        else
-            glfwWaitEvents();
     }
 
     glDeleteShader(shaders[0].id);
