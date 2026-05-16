@@ -2,7 +2,9 @@
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 #include <turbojpeg.h>
+#if defined(__linux__)
 #include <png.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,7 +12,9 @@
 #include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
+#if defined(__linux__)
 #include <sys/mman.h>
+#endif
 #include <sys/stat.h>
 
 typedef struct {
@@ -49,6 +53,7 @@ struct State {
     int isDirty;
     int isZoom;
     int isMaximized;
+    int isMovingWindow;
     int isFitted;
     int testCycling;
     float zoom, zoomFactor;
@@ -57,16 +62,20 @@ struct State {
     GLFWwindow* window;
 
     double lastClickTime;
+
+    double dragX, dragY;
+    int targetFrameRate;
 };
 
 struct State state = {
-    .windowWidth  = 420, .width  = 420,
-    .windowHeight = 500, .height = 500,
-    .isDirty      = 1,
-    .isFitted     = 1,
-    .testCycling  = 0,
-    .zoom         = 1.0f,
-    .zoomFactor   = 1.2f,
+    .windowWidth     = 420, .width  = 420,
+    .windowHeight    = 500, .height = 500,
+    .isDirty         = 1,
+    .isFitted        = 1,
+    .testCycling     = 0,
+    .zoom            = 1.0f,
+    .zoomFactor      = 1.2f,
+    .targetFrameRate = 60
 };
 
 int imageIndex = 0;
@@ -104,7 +113,7 @@ clock_t profiler_time_sum;
 GLenum opengl_print_error(int line) {
     GLenum errorCode;
     while ((errorCode = glGetError()) != GL_NO_ERROR) {
-        const char* error;
+        const char* error = "";
         switch (errorCode) {
             case GL_INVALID_ENUM:                  error = "INVALID_ENUM"; break;
             case GL_INVALID_VALUE:                 error = "INVALID_VALUE"; break;
@@ -120,10 +129,19 @@ GLenum opengl_print_error(int line) {
 
 static void iv_window_size_callback(GLFWwindow* window, int width, int height);
 
+static void iv_sleep(double time) {
+#if defined(__linux__)
+    time_t sec = time;
+    long nsec  = (time - sec) * 1000000000L;
+    struct timespec req = { .tv_sec = sec, .tv_nsec = nsec };
+    while (nanosleep(&req, &req) == -1) continue;
+#endif
+}
+
 static void iv_win_maximize_toggle(GLFWwindow* window) {
     if (state.isMaximized) {
-        glfwSetWindowMonitor(window, NULL, 0, 0, state.windowWidth, state.windowHeight, 60);
-        // BUG: WSLg + WAYLAND doesn't trigger size callback
+        glfwSetWindowMonitor(window, NULL, 0, 0, state.windowWidth, state.windowHeight, 0);
+        // WSL + WAYLAND doesn't trigger size callback
         if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
             iv_window_size_callback(window, state.windowWidth, state.windowHeight);
         }
@@ -131,10 +149,21 @@ static void iv_win_maximize_toggle(GLFWwindow* window) {
     } else {
         const GLFWvidmode* vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
         glfwSetWindowMonitor(window, glfwGetPrimaryMonitor(),
-            0, 0, vidmode->width, vidmode->height,
-            vidmode->refreshRate
+            0, 0, vidmode->width, vidmode->height, 0
         );
         state.isMaximized = 1;
+    }
+}
+
+static void iv_win_move(GLFWwindow* window, double x, double y) {
+    int winX, winY;
+    glfwGetWindowPos(window, &winX, &winY);
+
+    int newX = winX + (int)(x - state.dragX);
+    int newY = winY + (int)(y - state.dragY);
+
+    if (newY != winY || newX != winX) {
+        glfwSetWindowPos(window, newX, newY);
     }
 }
 
@@ -250,7 +279,9 @@ static void iv_error_callback(int error, const char* description) {
 }
 
 static void iv_cursor_position_callback(GLFWwindow* window, double x, double y) {
-    if (state.isPanning) {
+    if (state.isMovingWindow) {
+        iv_win_move(window, x, y);
+    } else if (state.isPanning) {
         iv_camera_update_pos((float)x, (float)y, (float)state.mouseX, (float)state.mouseY);
     }
     state.mouseX = x;
@@ -298,14 +329,20 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
 }
 
 static void iv_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        if (action == GLFW_RELEASE) {
-            double currentTime = glfwGetTime();
-            if (currentTime - state.lastClickTime < 0.3) {
-                iv_win_maximize_toggle(window);
-            }
-            state.lastClickTime = glfwGetTime();
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        state.isMovingWindow = 1;
+        glfwGetCursorPos(window, &state.dragX, &state.dragY);
+        glfwSetCursorPosCallback(state.window, iv_cursor_position_callback);
+    } else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+        glfwSetCursorPosCallback(window, NULL);
+        state.isMovingWindow = 0;
+
+        // double click
+        double currentTime = glfwGetTime();
+        if (currentTime - state.lastClickTime < 0.3) {
+            iv_win_maximize_toggle(window);
         }
+        state.lastClickTime = glfwGetTime();
     }
 }
 
@@ -326,7 +363,9 @@ static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
 
 static int init_glfw() {
     glfwSetErrorCallback(iv_error_callback);
-    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    if (glfwPlatformSupported(GLFW_PLATFORM_X11)) {
+        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+    }
     // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
     // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
@@ -341,7 +380,9 @@ static int init_glfw() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
 
-    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND) {
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    }
 
     state.window = glfwCreateWindow(state.width, state.height, "Image Viewer", NULL, NULL);
     if (!state.window) {
@@ -365,7 +406,12 @@ static int init_glfw() {
     glfwSetKeyCallback(state.window, iv_key_callback);
     glfwSetWindowSizeCallback(state.window, iv_window_size_callback);
     glfwSetScrollCallback(state.window, iv_window_scroll_callback);
-    // glfwSwapInterval(1);
+
+    glfwSwapInterval(0);
+    const GLFWvidmode* vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    if (vidmode->refreshRate < state.targetFrameRate) {
+        state.targetFrameRate = vidmode->refreshRate;
+    }
 
     return 1;
 }
@@ -487,7 +533,7 @@ static int shader_create_default(Shader* s) {
     shader_create(s, fsSource);
     return 0;
 }
-
+#if defined(__linux__)
 static int image_map_file_src_into(Image* image, void **buf) {
     int fd = open(image->fileName, O_RDONLY);
     if (fd == -1) {
@@ -516,8 +562,36 @@ static int image_map_file_src_into(Image* image, void **buf) {
 
     return 0;
 }
-/*
-static int image_read_file_src_into(Image* image, void **buf) {
+#else
+static int image_open(Image* image) {
+    long size = 0;
+
+    image->fileHandle = NULL;
+    image->fileSize   = 0;
+
+    if ((image->fileHandle = fopen(image->fileName, "rb")) == NULL) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        return -1;
+    }
+    if (fseek(image->fileHandle, 0, SEEK_END) < 0
+        || ((size = ftell(image->fileHandle)) < 0)
+        || fseek(image->fileHandle, 0, SEEK_SET) < 0) {
+        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        fclose(image->fileHandle);
+        return -1;
+    }
+    if (size == 0) {
+        fprintf(stderr, "ERROR:%d: file empty\n", __LINE__);
+        fclose(image->fileHandle);
+        return -1;
+    }
+
+    image->fileSize = size;
+
+    return 0;
+}
+
+static int image_map_file_src_into(Image* image, void **buf) {
     if (image_open(image) < 0) {
         return -1;
     }
@@ -532,7 +606,8 @@ static int image_read_file_src_into(Image* image, void **buf) {
     }
     return 0;
 }
-*/
+#endif
+
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
 static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_BGRX;
@@ -583,12 +658,16 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     image->height = h;
 
   cleanup:
+#if defined(__linux__)
     munmap(srcBuf, image->fileSize);
+#else
+    free(srcBuf);
+#endif
     tj3Destroy(tjh);
     if (image->fileHandle) fclose(image->fileHandle);
     return ret;
 }
-
+#if defined(__linux__)
 static unsigned int image_read_png_into(Image* image, void *srcBuf, void *dstBuf) {
     png_image pngImage;
     memset(&pngImage, 0, (sizeof pngImage));
@@ -612,7 +691,7 @@ static unsigned int image_read_png_into(Image* image, void *srcBuf, void *dstBuf
 
     return 0;
 }
-
+#endif
 static int is_jpeg(const unsigned char *srcBuf, size_t size) {
     if (size < 3) return 0;
     return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
@@ -635,14 +714,16 @@ static int image_load_texture(Image* image) {
     }
     profiler("image_map_file_src_into");
 
-    if (png_sig_cmp(srcBuf, 0, 8) == 0) {
+    if (is_jpeg(srcBuf, image->fileSize)) {
+            if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
+                return -1;
+            }
+#if defined(__linux__)
+    } else if (png_sig_cmp(srcBuf, 0, 8) == 0) {
         if (image_read_png_into(image, srcBuf, dstBuf) < 0) {
             return -1;
         }
-    } else if (is_jpeg(srcBuf, image->fileSize)) {
-        if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
-            return -1;
-        }
+#endif
     } else {
         fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
     }
@@ -720,6 +801,7 @@ int main(int argc, char** argv) {
         image_load_texture(&imageArray[0]);
         image_load_texture(&imageArray[1]);
     } else {
+        // Image t = { .fileName = "images\\architecture.jpg" };
         Image t = { .fileName = argv[1] };
         imageArray[0] = t;
         image_load_texture(&imageArray[0]);
@@ -747,31 +829,47 @@ int main(int argc, char** argv) {
     glUseProgram(shaders[shaderIndex].id); GLERR;
     // glfwWaitEventsTimeout(1);
 
-    glfwSetCursorPosCallback(state.window, iv_cursor_position_callback);
     iv_camera_fit(image);
 
     profiler("last mile");
     printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
+    double previous = glfwGetTime();
     while (!glfwWindowShouldClose(state.window)) {
+        double current = glfwGetTime();
+        double update = current - previous;
+        previous = current;
 
-        if (shaders[shaderIndex].uTime > 0 || state.isPanning)
+        if (!state.isMovingWindow) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            if (state.isDirty) {
+                state.isDirty = 0;
+                iv_camera_update_projection(image);
+
+                glUniformMatrix4fv(shaders[shaderIndex].uProjection, 1, GL_FALSE, state.projection);
+            }
+            if (shaders[shaderIndex].uTime > 0) {
+                glUniform1f(shaders[shaderIndex].uTime, (float)glfwGetTime());
+            }
+
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+            glfwSwapBuffers(state.window);
+        }
+
+        // throttling from raylib
+        current = glfwGetTime();
+        double draw = current - previous;
+        previous = current;
+        double frame = update + draw;
+        double target = (1.0/(double)state.targetFrameRate);
+        if (frame < target) {
+            iv_sleep(target - frame);
+        }
+        previous = glfwGetTime();
+
+        if (shaders[shaderIndex].uTime > 0 || state.isPanning || state.isMovingWindow)
             glfwPollEvents();
         else
             glfwWaitEvents();
-
-        glClear(GL_COLOR_BUFFER_BIT);
-        if (state.isDirty) {
-            state.isDirty = 0;
-            iv_camera_update_projection(image);
-
-            glUniformMatrix4fv(shaders[shaderIndex].uProjection, 1, GL_FALSE, state.projection);
-        }
-        if (shaders[shaderIndex].uTime > 0) {
-            glUniform1f(shaders[shaderIndex].uTime, (float)glfwGetTime());
-        }
-
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-        glfwSwapBuffers(state.window);
     }
 
     glDeleteShader(shaders[0].id);
