@@ -46,8 +46,9 @@ struct State {
     float  cameraX, cameraY;
     float  offsetX, offsetY;
 
-    int width,       height;
-    int windowWidth, windowHeight;
+    int width,        height;
+    int windowWidth,  windowHeight;
+    int displayWidth, displayHeight;
 
     int isPanning;
     int isDirty;
@@ -440,6 +441,23 @@ static int init_glfw() {
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     }
 
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
+    const GLFWvidmode* vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    if (vidmode->refreshRate < state.targetFrameRate) {
+        state.targetFrameRate = vidmode->refreshRate;
+    }
+    state.displayWidth  = vidmode->width;
+    state.displayHeight = vidmode->height;
+
+    if (0) {
+        state.width  = state.windowWidth  = (int)(state.displayWidth  * 0.75f);
+        state.height = state.windowHeight = (int)(state.displayHeight * 0.75f);
+    } else {
+        state.width  = state.windowWidth  = (int)(state.displayWidth  * 0.40f);
+        state.height = state.windowHeight = (int)(state.displayHeight * 0.8f);
+    }
+
     state.window = glfwCreateWindow(state.width, state.height, "Image Viewer", NULL, NULL);
     if (!state.window) {
         glfwTerminate();
@@ -458,16 +476,17 @@ static int init_glfw() {
     printf("GL_RENDERER: %s\n",       glGetString(GL_RENDERER));
     printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
 
+    glfwSetWindowPos(state.window,
+        state.displayWidth  / 2.0f - state.width  / 2.0f,
+        state.displayHeight / 2.0f - state.height / 2.0f
+    );
+
     glfwSetMouseButtonCallback(state.window, iv_mouse_button_callback);
     glfwSetKeyCallback(state.window, iv_key_callback);
     glfwSetWindowSizeCallback(state.window, iv_window_size_callback);
     glfwSetScrollCallback(state.window, iv_window_scroll_callback);
 
     glfwSwapInterval(0);
-    const GLFWvidmode* vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    if (vidmode->refreshRate < state.targetFrameRate) {
-        state.targetFrameRate = vidmode->refreshRate;
-    }
 
     return 1;
 }
@@ -886,6 +905,8 @@ int main(int argc, char** argv) {
     // glfwWaitEventsTimeout(1);
 
     iv_camera_fit(image);
+
+    glfwShowWindow(state.window);
 
     profiler("last mile");
     printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
