@@ -167,58 +167,99 @@ static void iv_win_move(GLFWwindow* window, double x, double y) {
     }
 }
 
-static void iv_camera_update_pos(float screenX, float screenY, float oldScreenX, float oldScreenY) {
-    float screenWidth  = (float)state.width;
-    float screenHeight = (float)state.height;
+static void iv_camera_update_pos(float posX, float posY, float posXOld, float posYOld) {
+    if (state.isFitted) {
+        float winWidth  = (float)state.width;
+        float winHeight = (float)state.height;
 
-    float deltaX = screenX - oldScreenX;
-    float deltaY = screenY - oldScreenY;
+        float deltaX = posX - posXOld;
+        float deltaY = posY - posYOld;
 
-    if (deltaX == 0.0f && deltaY == 0.0f) {
-        return;
+        if (deltaX == 0.0f && deltaY == 0.0f) {
+            return;
+        }
+
+        float windowAspect = winWidth / winHeight;
+        float worldHeight  = (float)image->height / state.zoom;
+        float worldWidth   = worldHeight * windowAspect;
+
+        float worldX = worldWidth  / winWidth;
+        float worldY = worldHeight / winHeight;
+
+        state.cameraX -= deltaX * worldX;
+        state.cameraY += deltaY * worldY;
+
+    } else {
+
+        state.cameraX -= (float)(posX - posXOld) / state.zoom;
+        state.cameraY += (float)(posY - posYOld) / state.zoom;
+
+        if (state.cameraX < 0.0f) state.cameraX = 0.0f;
+        if (state.cameraX > (float)image->width) state.cameraX = (float)image->width;
+        if (state.cameraY < 0.0f) state.cameraY = 0.0f;
+        if (state.cameraY > (float)image->height) state.cameraY = (float)image->height;
+
     }
-
-    float windowAspect = screenWidth / screenHeight;
-    float worldHeight  = (float)image->height / state.zoom;
-    float worldWidth   = worldHeight * windowAspect;
-
-    float worldX = worldWidth  / screenWidth;
-    float worldY = worldHeight / screenHeight;
-
-    state.cameraX -= deltaX * worldX;
-    state.cameraY += deltaY * worldY;
-
     state.isDirty = 1;
 }
 
-static void iv_camera_update_zoom(float screenX, float screenY, float delta) {
-    float screenWidth  = (float)state.width;
-    float screenHeight = (float)state.height;
+static void iv_camera_update_zoom(float posX, float posY, float delta) {
+    if (state.isFitted) {
+        float winWidth  = (float)state.width;
+        float winHeight = (float)state.height;
 
-    float aspectRatio = screenWidth / screenHeight;
-    float worldHeight = (float)image->height / state.zoom;
-    float worldWidth  = worldHeight * aspectRatio;
+        float aspectRatio = winWidth / winHeight;
+        float worldHeight = (float)image->height / state.zoom;
+        float worldWidth  = worldHeight * aspectRatio;
 
-    float left   = state.cameraX - (worldWidth  / 2.0f);
-    float bottom = state.cameraY - (worldHeight / 2.0f);
+        float left   = state.cameraX - (worldWidth  / 2.0f);
+        float bottom = state.cameraY - (worldHeight / 2.0f);
 
-    float worldX = left   + (screenX / screenWidth) * worldWidth;
-    float worldY = bottom + (1.0f - (screenY / screenHeight)) * worldHeight;
+        float worldX = left   + (posX / winWidth) * worldWidth;
+        float worldY = bottom + (1.0f - (posY / winHeight)) * worldHeight;
 
-    if (delta > 0) {
-        state.zoom *= state.zoomFactor;
+        if (delta > 0) {
+            state.zoom *= state.zoomFactor;
+        } else {
+            state.zoom /= state.zoomFactor;
+        }
+
+        if (state.zoom < 0.5f)   state.zoom = 0.5f;
+        if (state.zoom > 100.0f) state.zoom = 100.0f;
+
+        float newWorldHeight = (float)image->height / state.zoom;
+        float newWorldWidth  = newWorldHeight * aspectRatio;
+
+        state.cameraX = worldX - ((posX / winWidth) - 0.5f) * newWorldWidth;
+        state.cameraY = worldY - ((1.0f - (posY / winHeight)) - 0.5f) * newWorldHeight;
     } else {
-        state.zoom /= state.zoomFactor;
+        float winWidth  = (float)state.width;
+        float winHeight = (float)state.height;
+
+        float worldWidth  = winWidth  / state.zoom;
+        float worldHeight = winHeight / state.zoom;
+
+        float pctOffsetX = (posX / winWidth) - 0.5f;
+        float pctOffsetY = 0.5f - (posY / winHeight);
+
+        float mouseWorldX = state.cameraX + (pctOffsetX * worldWidth);
+        float mouseWorldY = state.cameraY + (pctOffsetY * worldHeight);
+
+        if (delta > 0) {
+            state.zoom *= state.zoomFactor;
+        } else {
+            state.zoom /= state.zoomFactor;
+        }
+
+        if (state.zoom < 0.1f)   state.zoom = 0.1f;
+        if (state.zoom > 100.0f) state.zoom = 100.0f;
+
+        float newWorldWidth  = winWidth / state.zoom;
+        float newWorldHeight = winHeight / state.zoom;
+
+        state.cameraX = mouseWorldX - (pctOffsetX * newWorldWidth);
+        state.cameraY = mouseWorldY - (pctOffsetY * newWorldHeight);
     }
-
-    if (state.zoom < 0.5f)   state.zoom = 0.5f;
-    if (state.zoom > 100.0f) state.zoom = 100.0f;
-
-    float newWorldHeight = (float)image->height / state.zoom;
-    float newWorldWidth  = newWorldHeight * aspectRatio;
-
-    state.cameraX = worldX - ((screenX / screenWidth) - 0.5f) * newWorldWidth;
-    state.cameraY = worldY - ((1.0f - (screenY / screenHeight)) - 0.5f) * newWorldHeight;
 
     state.isDirty = 1;
 }
@@ -233,18 +274,30 @@ static void iv_camera_update_projection_matrix(float* m, float l, float r, float
     m[15] = 1.0f;
 }
 
-static void iv_camera_update_projection(const Image* image) {
-    float aspectRatio = (float)state.width / (float)state.height;
+static void iv_camera_update_projection(const Image* img) {
+    if (!state.isFitted) {
+        float winWidth  = (float)state.width  / 2.0f / state.zoom;
+        float winHeight = (float)state.height / 2.0f / state.zoom;
 
-    float worldHeight = (float)image->height / state.zoom;
-    float worldWidth  = worldHeight * aspectRatio;
+        float l = state.cameraX - winWidth;
+        float r = state.cameraX + winWidth;
+        float b = state.cameraY - winHeight;
+        float t = state.cameraY + winHeight;
 
-    float l = state.cameraX - (worldWidth  / 2.0f);
-    float r = state.cameraX + (worldWidth  / 2.0f);
-    float b = state.cameraY - (worldHeight / 2.0f);
-    float t = state.cameraY + (worldHeight / 2.0f);
+        iv_camera_update_projection_matrix(state.projection, l, r, b, t);
+    } else {
+        float aspectRatio = (float)state.width / (float)state.height;
 
-    iv_camera_update_projection_matrix(state.projection, l, r, b, t);
+        float worldHeight = (float)img->height / state.zoom;
+        float worldWidth  = worldHeight * aspectRatio;
+
+        float l = state.cameraX - (worldWidth  / 2.0f);
+        float r = state.cameraX + (worldWidth  / 2.0f);
+        float b = state.cameraY - (worldHeight / 2.0f);
+        float t = state.cameraY + (worldHeight / 2.0f);
+
+        iv_camera_update_projection_matrix(state.projection, l, r, b, t);
+    }
 }
 
 static void iv_camera_center(Image* img) {
@@ -264,14 +317,13 @@ static void iv_camera_fit(Image* img) {
     }
 
     iv_camera_center(img);
+    state.isFitted = 1;
 }
 
 static void iv_camera_unfit(Image* img) {
-    float windowAspect = (float)state.width / (float)state.height;
-    float imageAspect  = (float)img->width  / (float)img->height;
-
-    state.zoom = windowAspect / imageAspect;
     iv_camera_center(img);
+    state.zoom = 1.0f;
+    state.isFitted = 0;
 }
 
 static void iv_error_callback(int error, const char* description) {
@@ -298,11 +350,10 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
     } else if (key == GLFW_KEY_R && action == GLFW_RELEASE) {
         if (state.isFitted) {
             iv_camera_unfit(image);
-            state.isFitted = 0;
         } else {
             iv_camera_fit(image);
-            state.isFitted = 1;
         }
+
     } else if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
         glUseProgram(shaders[shaderIndex].id); GLERR;
@@ -359,6 +410,11 @@ static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
     int w, h;
     glfwGetFramebufferSize(window, &w, &h); GLERR;
     glViewport(0, 0, w, h); GLERR;
+    if (state.isFitted) {
+        iv_camera_fit(image);
+    } else {
+        iv_camera_unfit(image);
+    }
 }
 
 static int init_glfw() {
