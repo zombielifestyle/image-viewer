@@ -18,6 +18,7 @@ Learning Project, may be broken at any time.
  * `S`: toggle wave shader for lulz
  * `SPACE`: panning
  * `MOUSE WHEEL`: zooming
+ * `RMB` move window
  * `F`, `F11`, `LMB` double click: maximize / restore
  * `LEFT` / `RIGHT`: next image (not really implemented yet)
 

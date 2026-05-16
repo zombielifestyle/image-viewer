@@ -380,14 +380,14 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
 }
 
 static void iv_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+    if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
         state.isMovingWindow = 1;
         glfwGetCursorPos(window, &state.dragX, &state.dragY);
         glfwSetCursorPosCallback(state.window, iv_cursor_position_callback);
-    } else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+    } else if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_RELEASE) {
         glfwSetCursorPosCallback(window, NULL);
         state.isMovingWindow = 0;
-
+    } else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
         // double click
         double currentTime = glfwGetTime();
         if (currentTime - state.lastClickTime < 0.3) {
