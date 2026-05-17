@@ -45,6 +45,8 @@ struct State {
     float  offsetX, offsetY;
 
     int width,        height;
+    int windowSizeX, windowSizeY;
+    int windowSizeXFloat, windowSizeYFloat;
     int windowWidth,  windowHeight;
     int displayWidth, displayHeight;
 
@@ -450,8 +452,23 @@ static int init_glfw() {
     state.displayWidth  = vidmode->width;
     state.displayHeight = vidmode->height;
 
-    state.width  = state.windowWidth  = (int)(state.displayWidth  * 0.40f);
-    state.height = state.windowHeight = (int)(state.displayHeight * 0.8f);
+    int w = (int)(state.displayWidth * 0.40f);
+    if (state.windowSizeX > 10 && state.windowSizeX <= state.displayWidth) {
+        w = state.windowSizeX;
+        if (state.windowSizeXFloat) {
+            w = state.displayWidth * (state.windowSizeX / 100.0f);
+        }
+    }
+    state.width = state.windowWidth = w;
+
+    int h = (int)(state.displayHeight * 0.8f);
+    if (state.windowSizeY > 10 && state.windowSizeY <= state.displayHeight) {
+        h = state.windowSizeY;
+        if (state.windowSizeYFloat) {
+            h = state.displayHeight * (state.windowSizeY / 100.0f);
+        }
+    }
+    state.height = state.windowHeight = h;
 
     state.window = glfwCreateWindow(state.width, state.height, "Image Viewer", NULL, NULL);
     if (!state.window) {
@@ -863,20 +880,43 @@ static void init_vao() {
 
 static int iv_arg_parse(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
-        return 1;
+        const char* help = "Usage: %s ./image-viewer [<options>] [<files>]\n"
+            "  -w   width (pixels or %)\n"
+            "  -h   height (pixels or %)\n"
+            ;
+        fprintf(stderr, help, argv[0]);
+        return -1;
     }
     images = malloc((argc - 1) * sizeof(Image));
 
     int i = 1;
     while (i < argc) {
         if (argv[i][0] == '-' && argv[i][1] != '\0') {
+            printf("ARG %s: %s\n", argv[i], argv[i+1]);
             switch (argv[i][1]) {
             case 'w':
             case 'h':
                 if (i + 1 < argc) {
-                    printf("%s: %s\n", argv[i], argv[i+1]);
+                    char d = argv[i][1];
                     i++;
+
+                    char *endptr;
+                    int isFloat = 0;
+                    int value = (int)strtol(argv[i], &endptr, 10);
+                    if (*endptr == '%') {
+                        isFloat = 1;
+                        if (value > 100 || value < 10) {
+                            value = 0;
+                            isFloat = 0;
+                        }
+                    }
+                    if (d == 'w') {
+                        state.windowSizeX = value;
+                        state.windowSizeXFloat = isFloat;
+                    } else {
+                        state.windowSizeY = value;
+                        state.windowSizeYFloat = isFloat;
+                    }
                 }
                 break;
             default:

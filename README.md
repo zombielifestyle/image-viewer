@@ -11,10 +11,13 @@ Learning Project, may be broken at any time.
 	`make run`
 
 ## Usage
-	./image-viewer [image]
+	./image-viewer [<options>] [<files>]
+	-w   width (pixels or %)
+	-h   height (pixels or %)
 
 ## Controls
  * `R`: toggle fitted mode
+ * `C`: center image
  * `S`: toggle wave shader for lulz
  * `SPACE`: panning
  * `MOUSE WHEEL`: zooming
