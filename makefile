@@ -5,6 +5,7 @@ RUNENV  = GALLIUM_DRIVER=d3d12
 CC = clang -g -Wall -Wno-unused-function -Wno-unused-variable
 # CC += -O3 -march=haswell
 
+ARGS    = images/lost-place.jpg images/architecture.jpg
 LDFLAGS =
 CFLAGS  =
 BACKEND ?= GLFW
@@ -58,9 +59,7 @@ build: clean
 	$(CC) -o image-viewer $(CFLAGS) $(LDFLAGS)
 
 run: build
-# 	$(RUNENV) ./image-viewer images/lost-place.jpg
-# 	$(RUNENV) ./image-viewer images/lost-place-8.png
-	$(RUNENV) ./image-viewer images/architecture.jpg
+	$(RUNENV) ./image-viewer $(ARGS)
 
 clean:
-	rm -f ./image-viewer
+	rm -f ./image-viewer ./image-viewer.exe

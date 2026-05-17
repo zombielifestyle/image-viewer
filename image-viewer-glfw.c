@@ -31,12 +31,10 @@ unsigned int shaderIndex = 0;
 
 typedef struct {
     const char* fileName;
-    FILE* fileHandle;
     long fileSize;
     int width;
     int height;
     unsigned int textureId;
-    int fd;
 } Image;
 
 struct State {
@@ -56,7 +54,6 @@ struct State {
     int isMaximized;
     int isMovingWindow;
     int isFitted;
-    int testCycling;
     float zoom, zoomFactor;
 
     unsigned int VAO, EBO, VBO;
@@ -73,15 +70,17 @@ struct State state = {
     .windowHeight    = 500, .height = 500,
     .isDirty         = 1,
     .isFitted        = 1,
-    .testCycling     = 0,
     .zoom            = 1.0f,
     .zoomFactor      = 1.2f,
     .targetFrameRate = 60
 };
 
 int imageIndex = 0;
-Image imageArray[2];
+int imageCount = 0;
 Image* image;
+Image *images;
+
+
 
 GLuint pbo;
 unsigned int vertShader = 0;
@@ -370,12 +369,13 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
     } else if (key == GLFW_KEY_SPACE && action == GLFW_RELEASE) {
         glfwSetCursorPosCallback(window, NULL);
         state.isPanning = 0;
-    } else if (state.testCycling && (key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
-        imageIndex = imageIndex+1 >= len(imageArray) ? 0 : imageIndex + 1;
-        image = &imageArray[imageIndex];
+    } else if ((key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
+        imageIndex = imageIndex+1 >= imageCount ? 0 : imageIndex + 1;
+        image = &images[imageIndex];
         glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
         glUseProgram(shaders[shaderIndex].id); GLERR;
         glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
+        iv_camera_fit(image);
         state.isDirty = 1;
     }
 }
@@ -450,13 +450,8 @@ static int init_glfw() {
     state.displayWidth  = vidmode->width;
     state.displayHeight = vidmode->height;
 
-    if (0) {
-        state.width  = state.windowWidth  = (int)(state.displayWidth  * 0.75f);
-        state.height = state.windowHeight = (int)(state.displayHeight * 0.75f);
-    } else {
-        state.width  = state.windowWidth  = (int)(state.displayWidth  * 0.40f);
-        state.height = state.windowHeight = (int)(state.displayHeight * 0.8f);
-    }
+    state.width  = state.windowWidth  = (int)(state.displayWidth  * 0.40f);
+    state.height = state.windowHeight = (int)(state.displayHeight * 0.8f);
 
     state.window = glfwCreateWindow(state.width, state.height, "Image Viewer", NULL, NULL);
     if (!state.window) {
@@ -477,8 +472,8 @@ static int init_glfw() {
     printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
 
     glfwSetWindowPos(state.window,
-        state.displayWidth  / 2.0f - state.width  / 2.0f,
-        state.displayHeight / 2.0f - state.height / 2.0f
+        (int)(state.displayWidth  / 2.0f - state.width  / 2.0f),
+        (int)(state.displayHeight / 2.0f - state.height / 2.0f)
     );
 
     glfwSetMouseButtonCallback(state.window, iv_mouse_button_callback);
@@ -609,55 +604,53 @@ static int shader_create_default(Shader* s) {
     return 0;
 }
 #if defined(__linux__)
-static int image_map_file_src_into(Image* image, void **buf) {
-    int fd = open(image->fileName, O_RDONLY);
+static int image_map_file_src_into(Image* img, void **buf) {
+    int ret = -1;
+    img->fileSize = 0;
+
+    int fd = open(img->fileName, O_RDONLY);
     if (fd == -1) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        return -1;
+        goto cleanup;
     }
 
     struct stat st;
     if (fstat(fd, &st) == -1) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        close(fd);
-        return -1;
+        goto cleanup;
     }
     size_t filesize = st.st_size;
 
     *buf = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
     if (*buf == MAP_FAILED) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        close(fd);
-        return -1;
+        goto cleanup;
     }
 
-    close(fd);
-    image->fileSize = st.st_size;
-    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
+    ret = 0;
+    img->fileSize = st.st_size;
 
-    return 0;
+  cleanup:
+    close(fd);
+    return ret;
 }
 #else
-static int image_open(Image* image) {
+static int image_open(Image* image, FILE** fileHandle) {
     long size = 0;
+    image->fileSize = 0;
 
-    image->fileHandle = NULL;
-    image->fileSize   = 0;
-
-    if ((image->fileHandle = fopen(image->fileName, "rb")) == NULL) {
+    if ((*fileHandle = fopen(image->fileName, "rb")) == NULL) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
         return -1;
     }
-    if (fseek(image->fileHandle, 0, SEEK_END) < 0
-        || ((size = ftell(image->fileHandle)) < 0)
-        || fseek(image->fileHandle, 0, SEEK_SET) < 0) {
+    if (fseek(*fileHandle, 0, SEEK_END) < 0
+        || ((size = ftell(*fileHandle)) < 0)
+        || fseek(*fileHandle, 0, SEEK_SET) < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        fclose(image->fileHandle);
         return -1;
     }
     if (size == 0) {
         fprintf(stderr, "ERROR:%d: file empty\n", __LINE__);
-        fclose(image->fileHandle);
         return -1;
     }
 
@@ -667,19 +660,29 @@ static int image_open(Image* image) {
 }
 
 static int image_map_file_src_into(Image* image, void **buf) {
-    if (image_open(image) < 0) {
-        return -1;
+    int ret = -1;
+    FILE* fileHandle = NULL;
+
+    if (image_open(image, &fileHandle) < 0) {
+        goto cleanup;
     }
+
     *buf = (void*)malloc(image->fileSize);
     if (*buf == NULL) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        return -1;
+        goto cleanup;
     }
-    if (fread(*buf, image->fileSize, 1, image->fileHandle) < 1) {
+
+    if (fread(*buf, image->fileSize, 1, fileHandle) < 1) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
-        return -1;
+        goto cleanup;
     }
-    return 0;
+
+    ret = 0;
+
+  cleanup:
+    fclose(fileHandle);
+    return ret;
 }
 #endif
 
@@ -739,7 +742,6 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     free(srcBuf);
 #endif
     tj3Destroy(tjh);
-    if (image->fileHandle) fclose(image->fileHandle);
     return ret;
 }
 #if defined(__linux__)
@@ -788,6 +790,7 @@ static int image_load_texture(Image* image) {
         return -1;
     }
     profiler("image_map_file_src_into");
+    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
 
     if (is_jpeg(srcBuf, image->fileSize)) {
             if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
@@ -858,32 +861,54 @@ static void init_vao() {
     glEnableVertexAttribArray(1);
 }
 
-int main(int argc, char** argv) {
+static int iv_arg_parse(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <path_to_image>\n", argv[0]);
         return 1;
     }
+    images = malloc((argc - 1) * sizeof(Image));
+
+    int i = 1;
+    while (i < argc) {
+        if (argv[i][0] == '-' && argv[i][1] != '\0') {
+            switch (argv[i][1]) {
+            case 'w':
+            case 'h':
+                if (i + 1 < argc) {
+                    printf("%s: %s\n", argv[i], argv[i+1]);
+                    i++;
+                }
+                break;
+            default:
+                printf("argument not recognized: %s\n", argv[i]);
+                free(images);
+                return -1;
+            }
+        } else {
+            printf("arg image[%d]: %s\n", imageCount, argv[i]);
+            images[imageCount++].fileName = argv[i];
+        }
+        i++;
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
     profiler_time_sum = profiler_time = clock();
+    if (iv_arg_parse(argc, argv) < 0)
+        return -1;
 
     if (!init_glfw())
-        return 2;
+        return -2;
 
-    if (state.testCycling) {
-        Image t  = { .fileName = "images/architecture.jpg", .fileSize = 0 };
-        imageArray[0] = t;
-        Image t2 = { .fileName = "images/lost-place.jpg",   .fileSize = 0 };
-        imageArray[1] = t2;
-        image_load_texture(&imageArray[0]);
-        image_load_texture(&imageArray[1]);
-    } else {
-        // Image t = { .fileName = "images\\architecture.jpg" };
-        Image t = { .fileName = argv[1] };
-        imageArray[0] = t;
-        image_load_texture(&imageArray[0]);
+    for (int i = 0; i < imageCount; i++) {
+        printf("IMAGE: %s\n", images[i].fileName);
+        image_load_texture(&images[i]);
     }
-    image = &imageArray[0];
+
+    image = &images[0];
     if (!image->textureId) {
-        return 3;
+        return -3;
     }
     shader_create_default(&shaders[0]);
     shader_create_wave(&shaders[1]);
@@ -949,6 +974,7 @@ int main(int argc, char** argv) {
             glfwWaitEvents();
     }
 
+    free(images);
     glDeleteShader(shaders[0].id);
     glDeleteShader(shaders[1].id);
     glDeleteBuffers(1, &pbo);
