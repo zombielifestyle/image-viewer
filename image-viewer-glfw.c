@@ -44,6 +44,10 @@ typedef struct {
     // GLenum pixelFormatInternal;
 } Image;
 
+int imageIndex = 0;
+int imageCount = 0;
+Image *images;
+
 struct State {
     float projection[16];
 
@@ -72,6 +76,8 @@ struct State {
 
     double dragX, dragY;
     int targetFrameRate;
+
+    Image *image;
 };
 
 struct State state = {
@@ -83,12 +89,6 @@ struct State state = {
     .zoomFactor      = 1.2f,
     .targetFrameRate = 60
 };
-
-int imageIndex = 0;
-int imageCount = 0;
-Image* image;
-Image *images;
-
 
 
 GLuint pbo;
@@ -187,7 +187,7 @@ static void iv_win_move(GLFWwindow* window, double x, double y) {
     }
 }
 
-static void iv_camera_update_pos(float posX, float posY, float posXOld, float posYOld) {
+static void iv_camera_update_pos(Image *img, float posX, float posY, float posXOld, float posYOld) {
     if (state.isFitted) {
         float winWidth  = (float)state.width;
         float winHeight = (float)state.height;
@@ -200,7 +200,7 @@ static void iv_camera_update_pos(float posX, float posY, float posXOld, float po
         }
 
         float windowAspect = winWidth / winHeight;
-        float worldHeight  = (float)image->height / state.zoom;
+        float worldHeight  = (float)img->height / state.zoom;
         float worldWidth   = worldHeight * windowAspect;
 
         float worldX = worldWidth  / winWidth;
@@ -215,21 +215,21 @@ static void iv_camera_update_pos(float posX, float posY, float posXOld, float po
         state.cameraY += (float)(posY - posYOld) / state.zoom;
 
         if (state.cameraX < 0.0f) state.cameraX = 0.0f;
-        if (state.cameraX > (float)image->width) state.cameraX = (float)image->width;
+        if (state.cameraX > (float)img->width) state.cameraX = (float)img->width;
         if (state.cameraY < 0.0f) state.cameraY = 0.0f;
-        if (state.cameraY > (float)image->height) state.cameraY = (float)image->height;
+        if (state.cameraY > (float)img->height) state.cameraY = (float)img->height;
 
     }
     state.isDirty = 1;
 }
 
-static void iv_camera_update_zoom(float posX, float posY, float delta) {
+static void iv_camera_update_zoom(Image *img, float posX, float posY, float delta) {
     if (state.isFitted) {
         float winWidth  = (float)state.width;
         float winHeight = (float)state.height;
 
         float aspectRatio = winWidth / winHeight;
-        float worldHeight = (float)image->height / state.zoom;
+        float worldHeight = (float)img->height / state.zoom;
         float worldWidth  = worldHeight * aspectRatio;
 
         float left   = state.cameraX - (worldWidth  / 2.0f);
@@ -247,7 +247,7 @@ static void iv_camera_update_zoom(float posX, float posY, float delta) {
         if (state.zoom < 0.5f)   state.zoom = 0.5f;
         if (state.zoom > 100.0f) state.zoom = 100.0f;
 
-        float newWorldHeight = (float)image->height / state.zoom;
+        float newWorldHeight = (float)img->height / state.zoom;
         float newWorldWidth  = newWorldHeight * aspectRatio;
 
         state.cameraX = worldX - ((posX / winWidth) - 0.5f) * newWorldWidth;
@@ -356,7 +356,7 @@ static void iv_cursor_position_callback(GLFWwindow* window, double x, double y) 
     if (app->isMovingWindow) {
         iv_win_move(window, x, y);
     } else if (app->isPanning) {
-        iv_camera_update_pos((float)x, (float)y, (float)app->mouseX, (float)app->mouseY);
+        iv_camera_update_pos(app->image, (float)x, (float)y, (float)app->mouseX, (float)app->mouseY);
     }
 
     app->mouseX = x;
@@ -365,23 +365,24 @@ static void iv_cursor_position_callback(GLFWwindow* window, double x, double y) 
 
 static void iv_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     struct State *app = glfwGetWindowUserPointer(window);
+    Image* img = app->image;
 
     if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     } else if ((key == GLFW_KEY_F || key == GLFW_KEY_F11) && action == GLFW_RELEASE) {
         iv_win_maximize_toggle(window);
     } else if (key == GLFW_KEY_C && action == GLFW_RELEASE) {
-        iv_camera_center(image);
+        iv_camera_center(img);
     } else if (key == GLFW_KEY_R && action == GLFW_RELEASE) {
         if (app->isFitted) {
-            iv_camera_unfit(image);
+            iv_camera_unfit(img);
         } else {
-            iv_camera_fit(image);
+            iv_camera_fit(img);
         }
     } else if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
         glUseProgram(shaders[shaderIndex].id); GLERR;
-        glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
+        glUniform2f(shaders[shaderIndex].uSize, (float)img->width, (float)img->height); GLERR;
         if (shaders[shaderIndex].uWSize != -1) {
             glUniform2f(shaders[shaderIndex].uWSize, (float)app->width, (float)app->height); GLERR;
         }
@@ -395,11 +396,11 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
         app->isPanning = 0;
     } else if ((key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
         imageIndex = imageIndex+1 >= imageCount ? 0 : imageIndex + 1;
-        image = &images[imageIndex];
-        glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
+        img = app->image = &images[imageIndex];
+        glBindTexture(GL_TEXTURE_2D, img->textureId); GLERR;
         glUseProgram(shaders[shaderIndex].id); GLERR;
-        glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
-        iv_camera_fit(image);
+        glUniform2f(shaders[shaderIndex].uSize, (float)img->width, (float)img->height); GLERR;
+        iv_camera_fit(img);
         app->isDirty = 1;
     }
 }
@@ -428,7 +429,7 @@ static void iv_window_scroll_callback(GLFWwindow* window, double xoffset, double
     struct State *app = glfwGetWindowUserPointer(window);
 
     glfwGetCursorPos(window, &app->mouseX, &app->mouseY);
-    iv_camera_update_zoom((float)app->mouseX, (float)app->mouseY, yoffset);
+    iv_camera_update_zoom(app->image, (float)app->mouseX, (float)app->mouseY, yoffset);
 }
 
 static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
@@ -442,9 +443,9 @@ static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
     glfwGetFramebufferSize(window, &w, &h); GLERR;
     glViewport(0, 0, w, h); GLERR;
     if (app->isFitted) {
-        iv_camera_fit(image);
+        iv_camera_fit(app->image);
     } else {
-        iv_camera_unfit(image);
+        iv_camera_unfit(app->image);
     }
 }
 
@@ -680,11 +681,11 @@ static int iv_image_map_file_src_into(Image* img, void **buf) {
     return ret;
 }
 #else
-static int iv_image_open(Image* image, FILE** fileHandle) {
+static int iv_image_open(Image* img, FILE** fileHandle) {
     long size = 0;
-    image->fileSize = 0;
+    img->fileSize = 0;
 
-    if ((*fileHandle = fopen(image->fileName, "rb")) == NULL) {
+    if ((*fileHandle = fopen(img->fileName, "rb")) == NULL) {
         ERROR("%s", strerror(errno));
         return -1;
     }
@@ -699,26 +700,26 @@ static int iv_image_open(Image* image, FILE** fileHandle) {
         return -1;
     }
 
-    image->fileSize = size;
+    img->fileSize = size;
 
     return 0;
 }
 
-static int iv_image_map_file_src_into(Image* image, void **buf) {
+static int iv_image_map_file_src_into(Image* img, void **buf) {
     int ret = -1;
     FILE* fileHandle = NULL;
 
-    if (iv_image_open(image, &fileHandle) < 0) {
+    if (iv_image_open(img, &fileHandle) < 0) {
         goto cleanup;
     }
 
-    *buf = (void*)malloc(image->fileSize);
+    *buf = (void*)malloc(img->fileSize);
     if (*buf == NULL) {
         ERROR("%s", strerror(errno));
         goto cleanup;
     }
 
-    if (fread(*buf, image->fileSize, 1, fileHandle) < 1) {
+    if (fread(*buf, img->fileSize, 1, fileHandle) < 1) {
         ERROR("%s", strerror(errno));
         goto cleanup;
     }
@@ -733,7 +734,7 @@ static int iv_image_map_file_src_into(Image* image, void **buf) {
 #endif
 
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
-static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
+static int iv_image_read_jpeg_into(Image* img, void *srcBuf, void *dstBuf) {
     int ret = -1, w, h, pixelFormat = TJPF_RGBA;
     tjhandle tjh = NULL;
 
@@ -744,7 +745,7 @@ static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     // tj3Set(tjh, TJPARAM_FASTDCT  ,     1);
     tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
 
-    if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
+    if (tj3DecompressHeader(tjh, srcBuf, img->fileSize) < 0) {
         ERROR("%s", tj3GetErrorStr(tjh));
         goto cleanup;
     }
@@ -767,17 +768,17 @@ static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     // w = TJSCALED(w, scalingFactor);
     // h = TJSCALED(h, scalingFactor);
 
-    if (tj3Decompress8(tjh, srcBuf, image->fileSize, dstBuf, 0, pixelFormat) < 0) {
+    if (tj3Decompress8(tjh, srcBuf, img->fileSize, dstBuf, 0, pixelFormat) < 0) {
         ERROR("%s", tj3GetErrorStr(tjh));
         goto cleanup;
     }
     profiler("\033[31mimage decompression\033[m");
 
-    ret           = 0;
-    image->width  = w;
-    image->height = h;
-    // image->pixelFormat = GL_RGBA;
-    // image->pixelFormatInternal = GL_RGBA;
+    ret = 0;
+    img->width  = w;
+    img->height = h;
+    // img->pixelFormat = GL_RGBA;
+    // img->pixelFormatInternal = GL_RGBA;
 
   cleanup:
     tj3Destroy(tjh);
@@ -937,11 +938,13 @@ static void iv_gl_init_vao() {
     glEnableVertexAttribArray(1);
 }
 
-static int iv_gl_init() {
-    for (int i = 0; i < imageCount; i++) {
-        printf("IMAGE: %s\n", images[i].fileName);
-        if (iv_gl_load_texture(&images[i]) < 0)
+static int iv_gl_init(int count, Image* images, Image** img) {
+    for (int i = 0; i < count; i++) {
+        printf("IMAGE[%d]: %s\n", i, images[i].fileName);
+        if (iv_gl_load_texture(&images[i]) < 0){
+            ERROR("FRESSSE");
             return -42;
+        }
     }
 
     shader_create_default(&shaders[0]);
@@ -950,14 +953,14 @@ static int iv_gl_init() {
 
     iv_gl_init_vao();
 
-    image = &images[0];
-    glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
+    *img = &images[0];
+    glBindTexture(GL_TEXTURE_2D, (*img)->textureId); GLERR;
 
     for (int i = 0; i < len(shaders); i++) {
         glUseProgram(shaders[i].id); GLERR;
         glUniform2f(shaders[i].uPosition, 0.0f, 0.0f); GLERR;
         glUniform1i(shaders[i].uFlipY,    1); GLERR;
-        glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height); GLERR;
+        glUniform2f(shaders[i].uSize,     (float)(*img)->width, (float)(*img)->height); GLERR;
     }
     glUseProgram(shaders[shaderIndex].id); GLERR;
 
@@ -1027,11 +1030,11 @@ int main(int argc, char** argv) {
     if (!iv_glfw_init())
         return -2;
 
-    if (iv_gl_init() < 0)
+    if (iv_gl_init(imageCount, images, &state.image) < 0)
         return -3;
 
     // glfwWaitEventsTimeout(1);
-    iv_camera_fit(image);
+    iv_camera_fit(state.image);
     glfwShowWindow(state.window);
 
     printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
@@ -1046,7 +1049,7 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT);
             if (state.isDirty) {
                 state.isDirty = 0;
-                iv_camera_update_projection(image);
+                iv_camera_update_projection(state.image);
 
                 glUniformMatrix4fv(shaders[shaderIndex].uProjection, 1, GL_FALSE, state.projection);
             }
