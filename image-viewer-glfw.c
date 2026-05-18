@@ -2,9 +2,12 @@
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 #include <turbojpeg.h>
-#if defined(__linux__)
-#include <png.h>
-#endif
+#define STBI_NO_STDIO
+#define STBI_NO_JPEG
+#define STBI_NO_LINEAR
+#define STBI_NO_HDR
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +37,10 @@ typedef struct {
     long fileSize;
     int width;
     int height;
+    int channels;
     unsigned int textureId;
+    // GLenum pixelFormat;
+    // GLenum pixelFormatInternal;
 } Image;
 
 struct State {
@@ -138,6 +144,11 @@ static void iv_sleep(double time) {
     struct timespec req = { .tv_sec = sec, .tv_nsec = nsec };
     while (nanosleep(&req, &req) == -1) continue;
 #endif
+}
+
+static int iv_image_is_jpeg(const unsigned char *srcBuf, size_t size) {
+    if (size < 3) return 0;
+    return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
 }
 
 static void iv_win_maximize_toggle(GLFWwindow* window) {
@@ -705,7 +716,7 @@ static int image_map_file_src_into(Image* image, void **buf) {
 
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
 static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
-    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_BGRX;
+    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_RGBA;
     tjhandle tjh = NULL;
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
@@ -719,7 +730,7 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         goto cleanup;
     }
-    profiler("tj3DecompressHeader");
+    profiler("image header decompression");
 
     w = tj3Get(tjh, TJPARAM_JPEGWIDTH);
     h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
@@ -741,7 +752,7 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     // h = TJSCALED(h, scalingFactor);
 
     ret = tj3Decompress8(tjh, srcBuf, image->fileSize, dstBuf, 0, pixelFormat);
-    profiler("tj3Decompress8");
+    profiler("\033[31mimage decompression\033[m");
     if (ret < 0) {
         fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
         ret = -1;
@@ -751,6 +762,8 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     ret           = 0;
     image->width  = w;
     image->height = h;
+    // image->pixelFormat = GL_RGBA;
+    // image->pixelFormatInternal = GL_RGBA;
 
   cleanup:
 #if defined(__linux__)
@@ -761,34 +774,35 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     tj3Destroy(tjh);
     return ret;
 }
-#if defined(__linux__)
-static unsigned int image_read_png_into(Image* image, void *srcBuf, void *dstBuf) {
-    png_image pngImage;
-    memset(&pngImage, 0, (sizeof pngImage));
-    pngImage.version = PNG_IMAGE_VERSION;
 
-    if (!png_image_begin_read_from_memory(&pngImage, srcBuf, image->fileSize)) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, pngImage.message);
+static int image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
+    stbi_set_unpremultiply_on_load(1);
+    int desiredChannels = 4;
+    void* tempBuf = stbi_load_from_memory(
+        srcBuf, img->fileSize, &img->width, &img->height, &img->channels, desiredChannels
+    );
+    if (!tempBuf) {
+        fprintf(stderr, "Error: Could not load image '%s'\n", img->fileName);
+        fprintf(stderr, "Reason: %s\n", stbi_failure_reason());
         return -1;
     }
-    profiler("png_image_begin_read_from_memory");
+    profiler("\033[31mimage decompression\033[m");
 
-    pngImage.format = PNG_FORMAT_RGB;
-    if (!png_image_finish_read(&pngImage, 0, dstBuf, 0, NULL)) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, pngImage.message);
+    if ((img->width + img->height) * desiredChannels > (4000 + 6000) * desiredChannels) {
+        fprintf(stderr, "Error: Image too large '%s'\n", img->fileName);
         return -1;
     }
-    profiler("png_image_finish_read");
 
-    image->width  = pngImage.width;
-    image->height = pngImage.height;
+    size_t imageSize = img->width * img->height * desiredChannels;
+    memcpy(dstBuf, tempBuf, imageSize);
+    profiler("image memcpy");
+
+    stbi_image_free(tempBuf);
+
+    // img->pixelFormat = GL_RGBA;
+    // img->pixelFormatInternal = GL_RGBA;
 
     return 0;
-}
-#endif
-static int is_jpeg(const unsigned char *srcBuf, size_t size) {
-    if (size < 3) return 0;
-    return (srcBuf[0] == 0xFF && srcBuf[1] == 0xD8 && srcBuf[2] == 0xFF);
 }
 
 static int image_load_texture(Image* image) {
@@ -809,20 +823,19 @@ static int image_load_texture(Image* image) {
     profiler("image_map_file_src_into");
     printf("file: %s size: %ld\n", image->fileName, image->fileSize);
 
-    if (is_jpeg(srcBuf, image->fileSize)) {
-            if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
-                return -1;
-            }
-#if defined(__linux__)
-    } else if (png_sig_cmp(srcBuf, 0, 8) == 0) {
-        if (image_read_png_into(image, srcBuf, dstBuf) < 0) {
+    if (iv_image_is_jpeg(srcBuf, image->fileSize)) {
+        if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
             return -1;
         }
-#endif
+    } else if (stbi_info_from_memory(srcBuf, image->fileSize, &image->width, &image->height, &image->channels)) {
+        if (image_read_stb_into(image, srcBuf, dstBuf) < 0) {
+            return -1;
+        }
     } else {
         fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
     }
     printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
+    // profiler("image decompression");
 
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER); GLERR;
     profiler("image_load_texture -> unmap buffers");
@@ -837,12 +850,12 @@ static int image_load_texture(Image* image) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glTexImage2D(GL_TEXTURE_2D,
-        0, GL_BGRA, image->width, image->height,
-        0, GL_BGRA, GL_UNSIGNED_BYTE, NULL
+        0, GL_RGBA, image->width, image->height,
+        0, GL_RGBA, GL_UNSIGNED_BYTE, NULL
     ); GLERR;
     glGenerateMipmap(GL_TEXTURE_2D); GLERR;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
-    profiler("image_load_texture -> texture");
+    profiler("\033[31mimage_load_texture -> texture\033[m");
 
     image->textureId = texture;
 
@@ -943,7 +956,8 @@ int main(int argc, char** argv) {
 
     for (int i = 0; i < imageCount; i++) {
         printf("IMAGE: %s\n", images[i].fileName);
-        image_load_texture(&images[i]);
+        if (image_load_texture(&images[i]) < 0)
+            return -42;
     }
 
     image = &images[0];

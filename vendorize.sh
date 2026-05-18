@@ -4,8 +4,8 @@
 #git clone --depth 1 --branch 5.0 https://github.com/raysan5/raylib.git libs/raylib
 
 ## stb
-# mkdir -p libs/stb
-# curl -o libs/stb/stb_image.h https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
+mkdir -p libs/stb
+curl -o libs/stb/stb_image.h https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
 
 # windows cross compile
 #sudo apt install mingw-w64
@@ -41,8 +41,9 @@ make -j$(nproc)
 cd -
 
 ## libpng
-curl -L https://sourceforge.net/projects/libpng/files/libpng16/1.6.58/libpng-1.6.58.tar.xz/download |tar -C libs/ -vxJ 
-cd libs/libpng-1.6.58/
-cmake .
-make
-cd -
+#curl -L https://sourceforge.net/projects/libpng/files/libpng16/1.6.58/libpng-1.6.58.tar.xz/download |tar -C libs/ -vxJ
+#cd libs/libpng-1.6.58/
+#cp scripts/makefile.clang ./Makefile
+#./configure --enable-hardware-optimizations=yes
+#make -j$(nproc) CFLAGS=" -g -O3 "
+#cd -

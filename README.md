@@ -8,7 +8,7 @@ Learning Project, may be broken at any time.
 
 ./vendorize.sh can pull deps. Untested with great care.
 
-	`make run`
+	make run
 
 ## Usage
 	./image-viewer [<options>] [<files>]
@@ -23,7 +23,7 @@ Learning Project, may be broken at any time.
  * `MOUSE WHEEL`: zooming
  * `RMB` move window
  * `F`, `F11`, `LMB` double click: maximize / restore
- * `LEFT` / `RIGHT`: next image (not really implemented yet)
+ * `LEFT` / `RIGHT`: next image
 
 Image formats:
  * jpeg

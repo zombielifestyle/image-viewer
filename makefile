@@ -17,7 +17,7 @@ ifeq ($(TARGET), WIN)
 endif
 
 # stb
-# CFLAGS  += -Ilibs/stb
+CFLAGS  += -Ilibs/stb
 
 # libjpeg-turbo
 ifeq ($(TARGET), WIN)
@@ -28,9 +28,9 @@ endif
 CFLAGS  += -Ilibs/libjpeg-turbo/src
 CFLAGS  += -Ilibs/libjpeg-turbo/build
 
-# libpng
-CFLAGS  += -Ilibs/libpng-1.6.58/
-LDFLAGS += libs/libpng-1.6.58/libpng.a
+# libpng - stb is much faster
+#CFLAGS  += -Ilibs/libpng-1.6.58/
+#LDFLAGS += libs/libpng-1.6.58/libpng16.a
 
 ifeq ($(BACKEND), WAYLAND)
 # 	RUNENV += WAYLAND_DEBUG=client
