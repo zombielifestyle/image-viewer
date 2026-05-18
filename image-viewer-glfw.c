@@ -119,6 +119,12 @@ clock_t profiler_time_sum;
     profiler_time = clock(); \
 }
 
+#define ERROR(s, ...) { \
+    fprintf(stderr, "%s:%d \033[31mERROR\033[m ", __FILE__, __LINE__); \
+    fprintf(stderr, s,##__VA_ARGS__); \
+    fprintf(stderr, "\n"); \
+}
+
 GLenum opengl_print_error(int line) {
     GLenum errorCode;
     while ((errorCode = glGetError()) != GL_NO_ERROR) {
@@ -341,20 +347,25 @@ static void iv_camera_unfit(Image* img) {
 }
 
 static void iv_error_callback(int error, const char* description) {
-    fprintf(stderr, "GLFW Error: %s\n", description);
+    ERROR("%s", description);
 }
 
 static void iv_cursor_position_callback(GLFWwindow* window, double x, double y) {
-    if (state.isMovingWindow) {
+    struct State *app = glfwGetWindowUserPointer(window);
+
+    if (app->isMovingWindow) {
         iv_win_move(window, x, y);
-    } else if (state.isPanning) {
-        iv_camera_update_pos((float)x, (float)y, (float)state.mouseX, (float)state.mouseY);
+    } else if (app->isPanning) {
+        iv_camera_update_pos((float)x, (float)y, (float)app->mouseX, (float)app->mouseY);
     }
-    state.mouseX = x;
-    state.mouseY = y;
+
+    app->mouseX = x;
+    app->mouseY = y;
 }
 
 static void iv_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    struct State *app = glfwGetWindowUserPointer(window);
+
     if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     } else if ((key == GLFW_KEY_F || key == GLFW_KEY_F11) && action == GLFW_RELEASE) {
@@ -362,27 +373,26 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
     } else if (key == GLFW_KEY_C && action == GLFW_RELEASE) {
         iv_camera_center(image);
     } else if (key == GLFW_KEY_R && action == GLFW_RELEASE) {
-        if (state.isFitted) {
+        if (app->isFitted) {
             iv_camera_unfit(image);
         } else {
             iv_camera_fit(image);
         }
-
     } else if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
         glUseProgram(shaders[shaderIndex].id); GLERR;
         glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
         if (shaders[shaderIndex].uWSize != -1) {
-            glUniform2f(shaders[shaderIndex].uWSize, (float)state.width, (float)state.height); GLERR;
+            glUniform2f(shaders[shaderIndex].uWSize, (float)app->width, (float)app->height); GLERR;
         }
-        state.isDirty = 1;
+        app->isDirty = 1;
     } else if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
-        glfwGetCursorPos(window, &state.mouseX, &state.mouseY);
+        glfwGetCursorPos(window, &app->mouseX, &app->mouseY);
         glfwSetCursorPosCallback(window, iv_cursor_position_callback);
-        state.isPanning = 1;
+        app->isPanning = 1;
     } else if (key == GLFW_KEY_SPACE && action == GLFW_RELEASE) {
         glfwSetCursorPosCallback(window, NULL);
-        state.isPanning = 0;
+        app->isPanning = 0;
     } else if ((key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
         imageIndex = imageIndex+1 >= imageCount ? 0 : imageIndex + 1;
         image = &images[imageIndex];
@@ -390,18 +400,20 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
         glUseProgram(shaders[shaderIndex].id); GLERR;
         glUniform2f(shaders[shaderIndex].uSize, (float)image->width, (float)image->height); GLERR;
         iv_camera_fit(image);
-        state.isDirty = 1;
+        app->isDirty = 1;
     }
 }
 
 static void iv_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    struct State *app = glfwGetWindowUserPointer(window);
+
     if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
-        state.isMovingWindow = 1;
-        glfwGetCursorPos(window, &state.dragX, &state.dragY);
-        glfwSetCursorPosCallback(state.window, iv_cursor_position_callback);
+        app->isMovingWindow = 1;
+        glfwGetCursorPos(window, &app->dragX, &app->dragY);
+        glfwSetCursorPosCallback(app->window, iv_cursor_position_callback);
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_RELEASE) {
         glfwSetCursorPosCallback(window, NULL);
-        state.isMovingWindow = 0;
+        app->isMovingWindow = 0;
     } else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
         // double click
         double currentTime = glfwGetTime();
@@ -413,50 +425,30 @@ static void iv_mouse_button_callback(GLFWwindow* window, int button, int action,
 }
 
 static void iv_window_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    glfwGetCursorPos(window, &state.mouseX, &state.mouseY);
-    iv_camera_update_zoom((float)state.mouseX, (float)state.mouseY, yoffset);
+    struct State *app = glfwGetWindowUserPointer(window);
+
+    glfwGetCursorPos(window, &app->mouseX, &app->mouseY);
+    iv_camera_update_zoom((float)app->mouseX, (float)app->mouseY, yoffset);
 }
 
 static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
-    state.isDirty = 1;
-    state.width   = width;
-    state.height  = height;
+    struct State *app = glfwGetWindowUserPointer(window);
+
+    app->isDirty = 1;
+    app->width   = width;
+    app->height  = height;
     printf("resize: %d, %d\n", width, height);
     int w, h;
     glfwGetFramebufferSize(window, &w, &h); GLERR;
     glViewport(0, 0, w, h); GLERR;
-    if (state.isFitted) {
+    if (app->isFitted) {
         iv_camera_fit(image);
     } else {
         iv_camera_unfit(image);
     }
 }
 
-static int init_glfw() {
-    glfwSetErrorCallback(iv_error_callback);
-    if (glfwPlatformSupported(GLFW_PLATFORM_X11)) {
-        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-    }
-    // glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
-    // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_PREFER_LIBDECOR);
-    // glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
-
-    if (!glfwInit())
-        return -1;
-    profiler("glfwInit");
-    glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_NATIVE_CONTEXT_API);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
-
-    if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND) {
-        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-    }
-
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-
+static void iv_glfw_init_window_size() {
     const GLFWvidmode* vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
     if (vidmode->refreshRate < state.targetFrameRate) {
         state.targetFrameRate = vidmode->refreshRate;
@@ -481,21 +473,42 @@ static int init_glfw() {
         }
     }
     state.height = state.windowHeight = h;
+}
+
+static int iv_glfw_init() {
+    glfwSetErrorCallback(iv_error_callback);
+    if (glfwPlatformSupported(GLFW_PLATFORM_X11))
+        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+
+    if (!glfwInit())
+        return 0;
+    profiler("iv_glfw_init init");
+
+    glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_NATIVE_CONTEXT_API);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
+
+    if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND)
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    iv_glfw_init_window_size();
 
     state.window = glfwCreateWindow(state.width, state.height, "Image Viewer", NULL, NULL);
-    if (!state.window) {
-        glfwTerminate();
+    if (!state.window)
+        return 0;
+
+    glfwMakeContextCurrent(state.window);
+    profiler("iv_glfw_init create window");
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        ERROR("Failed to initialize GLAD\n");
         return 0;
     }
 
-    profiler("glfwCreateWindow");
-    glfwMakeContextCurrent(state.window);
-    profiler("glfwMakeContextCurrent");
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        printf("Failed to initialize GLAD\n");
-        return 0;
-    }
-    profiler("glad");
     printf("GL_VERSION: %s\n",        glGetString(GL_VERSION));
     printf("GL_RENDERER: %s\n",       glGetString(GL_RENDERER));
     printf("TURBOJPEG_VERSION: %d\n", TURBOJPEG_VERSION_NUMBER);
@@ -504,6 +517,8 @@ static int init_glfw() {
         (int)(state.displayWidth  / 2.0f - state.width  / 2.0f),
         (int)(state.displayHeight / 2.0f - state.height / 2.0f)
     );
+
+    glfwSetWindowUserPointer(state.window, &state);
 
     glfwSetMouseButtonCallback(state.window, iv_mouse_button_callback);
     glfwSetKeyCallback(state.window, iv_key_callback);
@@ -528,7 +543,7 @@ static int shader_create(Shader* s, const char* fsSource) {
     glGetShaderiv(fragShader, GL_COMPILE_STATUS, &success);
     if (!success) {
         glGetShaderInfoLog(fragShader, 512, NULL, infoLog);
-        printf("ERROR: Shader Compilation Failed\n%s\n", infoLog);
+        ERROR("Shader Compilation Failed: %s", infoLog);
         return 0;
     }
     glAttachShader(program, fragShader);
@@ -540,7 +555,7 @@ static int shader_create(Shader* s, const char* fsSource) {
         glGetShaderiv(vertShader, GL_COMPILE_STATUS, &success);
         if (!success) {
             glGetShaderInfoLog(vertShader, 512, NULL, infoLog);
-            printf("ERROR: Shader Compilation Failed\n%s\n", infoLog);
+            ERROR("Shader Compilation Failed: %s", infoLog);
             return 0;
         }
     }
@@ -639,20 +654,20 @@ static int iv_image_map_file_src_into(Image* img, void **buf) {
 
     int fd = open(img->fileName, O_RDONLY);
     if (fd == -1) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         goto cleanup;
     }
 
     struct stat st;
     if (fstat(fd, &st) == -1) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         goto cleanup;
     }
     size_t filesize = st.st_size;
 
     *buf = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
     if (*buf == MAP_FAILED) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         goto cleanup;
     }
 
@@ -670,17 +685,17 @@ static int iv_image_open(Image* image, FILE** fileHandle) {
     image->fileSize = 0;
 
     if ((*fileHandle = fopen(image->fileName, "rb")) == NULL) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         return -1;
     }
     if (fseek(*fileHandle, 0, SEEK_END) < 0
         || ((size = ftell(*fileHandle)) < 0)
         || fseek(*fileHandle, 0, SEEK_SET) < 0) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         return -1;
     }
     if (size == 0) {
-        fprintf(stderr, "ERROR:%d: file empty\n", __LINE__);
+        ERROR("file empty");
         return -1;
     }
 
@@ -699,12 +714,12 @@ static int iv_image_map_file_src_into(Image* image, void **buf) {
 
     *buf = (void*)malloc(image->fileSize);
     if (*buf == NULL) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         goto cleanup;
     }
 
     if (fread(*buf, image->fileSize, 1, fileHandle) < 1) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, strerror(errno));
+        ERROR("%s", strerror(errno));
         goto cleanup;
     }
 
@@ -719,7 +734,7 @@ static int iv_image_map_file_src_into(Image* image, void **buf) {
 
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
 static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
-    int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_RGBA;
+    int ret = -1, w, h, pixelFormat = TJPF_RGBA;
     tjhandle tjh = NULL;
 
     tjh = tj3Init(TJINIT_DECOMPRESS);
@@ -730,37 +745,33 @@ static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     tj3Set(tjh, TJPARAM_FASTUPSAMPLE,  1);
 
     if (tj3DecompressHeader(tjh, srcBuf, image->fileSize) < 0) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
+        ERROR("%s", tj3GetErrorStr(tjh));
         goto cleanup;
     }
     profiler("image header decompression");
 
     w = tj3Get(tjh, TJPARAM_JPEGWIDTH);
     h = tj3Get(tjh, TJPARAM_JPEGHEIGHT);
-    jpegPrecision = tj3Get(tjh, TJPARAM_PRECISION);
-    colorspace = tj3Get(tjh, TJPARAM_COLORSPACE);
+    int jpegPrecision = tj3Get(tjh, TJPARAM_PRECISION);
+    int colorspace = tj3Get(tjh, TJPARAM_COLORSPACE);
     if (colorspace == TJCS_CMYK || colorspace == TJCS_YCCK) {
-        fprintf(stderr, "ERROR:%d: CMYK/YCCK pixel formats not supported.\n", __LINE__);
+        ERROR("CMYK/YCCK pixel formats not supported");
         goto cleanup;
     }
-    printf("precision: %d colorspace: %d\n", jpegPrecision, colorspace);
 
     // // tjscalingfactor scalingFactor = TJUNSCALED;
     // tjscalingfactor scalingFactor = {1,8};
     // if (tj3SetScalingFactor(tjh, scalingFactor) < 0) {
-    //     fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
     //     goto cleanup;
     // }
     // w = TJSCALED(w, scalingFactor);
     // h = TJSCALED(h, scalingFactor);
 
-    ret = tj3Decompress8(tjh, srcBuf, image->fileSize, dstBuf, 0, pixelFormat);
-    profiler("\033[31mimage decompression\033[m");
-    if (ret < 0) {
-        fprintf(stderr, "ERROR:%d: %s\n", __LINE__, tj3GetErrorStr(tjh));
-        ret = -1;
+    if (tj3Decompress8(tjh, srcBuf, image->fileSize, dstBuf, 0, pixelFormat) < 0) {
+        ERROR("%s", tj3GetErrorStr(tjh));
         goto cleanup;
     }
+    profiler("\033[31mimage decompression\033[m");
 
     ret           = 0;
     image->width  = w;
@@ -772,6 +783,7 @@ static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     tj3Destroy(tjh);
     return ret;
 }
+
 static int iv_image_info_stb(Image *img, void *srcBuf) {
     int ret = stbi_info_from_memory(srcBuf, img->fileSize, &img->width, &img->height, &img->channels);
     profiler("image_info_stbi");
@@ -785,14 +797,14 @@ static int iv_image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
         srcBuf, img->fileSize, &img->width, &img->height, &img->channels, desiredChannels
     );
     if (!tempBuf) {
-        fprintf(stderr, "Error: Could not load image '%s'\n", img->fileName);
-        fprintf(stderr, "Reason: %s\n", stbi_failure_reason());
+        ERROR("Could not load image '%s'", img->fileName);
+        ERROR("Reason: %s", stbi_failure_reason());
         return -1;
     }
     profiler("\033[31mimage decompression\033[m");
 
     if ((img->width + img->height) * desiredChannels > (4000 + 6000) * desiredChannels) {
-        fprintf(stderr, "Error: Image too large '%s'\n", img->fileName);
+        ERROR("Image too large '%s'", img->fileName);
         return -1;
     }
 
@@ -818,8 +830,8 @@ static int iv_image_read_webp_into(Image* img, void *srcBuf, void *dstBuf) {
     size_t dstBufSize = (size_t)img->width * img->height * 4;
     uint8_t* tempBuf = WebPDecodeRGBAInto(srcBuf, img->fileSize, dstBuf, dstBufSize, img->width * 4);
     if (tempBuf == NULL) {
+        ERROR("decoding webp image\n");
         return -1;
-        fprintf(stderr, "Error: decoding webp image\n");
     }
     profiler("\033[31mimage decompression\033[m");
 
@@ -844,10 +856,11 @@ static int iv_image_load_into(Image *img, void *dstBuf) {
         if (iv_image_read_webp_into(img, srcBuf, dstBuf) < 0)
             goto cleanup;
     } else {
-        fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
+        ERROR("unknown image type");
         return -2;
     }
     printf("image w:%d h:%d size:%ld \n", img->width, img->height, img->fileSize);
+    ret = 0;
 
   cleanup:
 #if defined(__linux__)
@@ -855,25 +868,23 @@ static int iv_image_load_into(Image *img, void *dstBuf) {
 #else
     free(srcBuf);
 #endif
-    return 0;
+    return ret;
 }
 
-static int image_load_texture(Image* image) {
+static int iv_gl_load_texture(Image* img) {
     unsigned int texture;
-    profiler("image_load_texture");
 
     glGenBuffers(1, &pbo); GLERR;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
     glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW); GLERR;
     void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
     // void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 4000 * 6000 * 4, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT); GLERR;
-    profiler("image_load_texture -> map buffers");
+    profiler("iv_gl_load_texture -> map buffers");
 
-    if (iv_image_load_into(image, dstBuf) < 0) {
+    if (iv_image_load_into(img, dstBuf) < 0) {
         return -1;
     }
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER); GLERR;
-    profiler("image_load_texture -> unmap buffers");
 
     glGenTextures(1, &texture); GLERR;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
@@ -885,19 +896,19 @@ static int image_load_texture(Image* image) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glTexImage2D(GL_TEXTURE_2D,
-        0, GL_RGBA, image->width, image->height,
+        0, GL_RGBA, img->width, img->height,
         0, GL_RGBA, GL_UNSIGNED_BYTE, NULL
     ); GLERR;
     glGenerateMipmap(GL_TEXTURE_2D); GLERR;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0); GLERR;
-    profiler("\033[31mimage_load_texture -> texture\033[m");
+    profiler("\033[31miv_gl_load_texture -> texture\033[m");
 
-    image->textureId = texture;
+    img->textureId = texture;
 
     return 0;
 }
 
-static void init_vao() {
+static void iv_gl_init_vao() {
     float vertices[] = {
         1.0f, 1.0f,  1.0f, 1.0f, // Top Right
         1.0f, 0.0f,  1.0f, 0.0f, // Bottom Right
@@ -926,13 +937,40 @@ static void init_vao() {
     glEnableVertexAttribArray(1);
 }
 
+static int iv_gl_init() {
+    for (int i = 0; i < imageCount; i++) {
+        printf("IMAGE: %s\n", images[i].fileName);
+        if (iv_gl_load_texture(&images[i]) < 0)
+            return -42;
+    }
+
+    shader_create_default(&shaders[0]);
+    shader_create_wave(&shaders[1]);
+    profiler("shader_create_*");
+
+    iv_gl_init_vao();
+
+    image = &images[0];
+    glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
+
+    for (int i = 0; i < len(shaders); i++) {
+        glUseProgram(shaders[i].id); GLERR;
+        glUniform2f(shaders[i].uPosition, 0.0f, 0.0f); GLERR;
+        glUniform1i(shaders[i].uFlipY,    1); GLERR;
+        glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height); GLERR;
+    }
+    glUseProgram(shaders[shaderIndex].id); GLERR;
+
+    return 0;
+}
+
 static int iv_arg_parse(int argc, char** argv) {
     if (argc < 2) {
         const char* help = "Usage: %s ./image-viewer [<options>] [<files>]\n"
             "  -w   width (pixels or %)\n"
             "  -h   height (pixels or %)\n"
             ;
-        fprintf(stderr, help, argv[0]);
+        printf(help, argv[0]);
         return -1;
     }
     images = malloc((argc - 1) * sizeof(Image));
@@ -986,44 +1024,18 @@ int main(int argc, char** argv) {
     if (iv_arg_parse(argc, argv) < 0)
         return -1;
 
-    if (!init_glfw())
+    if (!iv_glfw_init())
         return -2;
 
-    for (int i = 0; i < imageCount; i++) {
-        printf("IMAGE: %s\n", images[i].fileName);
-        if (image_load_texture(&images[i]) < 0)
-            return -42;
-    }
-
-    image = &images[0];
-    if (!image->textureId) {
+    if (iv_gl_init() < 0)
         return -3;
-    }
-    shader_create_default(&shaders[0]);
-    shader_create_wave(&shaders[1]);
-    profiler("shader_create_*");
 
-    init_vao();
-    profiler("init_vao");
-
-    glBindTexture(GL_TEXTURE_2D, image->textureId); GLERR;
-
-    int i = 0;
-    for (;i < len(shaders); i++) {
-        glUseProgram(shaders[i].id); GLERR;
-        glUniform2f(shaders[i].uPosition, 0.0f, 0.0f); GLERR;
-        glUniform1i(shaders[i].uFlipY,    1); GLERR;
-        glUniform2f(shaders[i].uSize,     (float)image->width, (float)image->height); GLERR;
-    }
-    glUseProgram(shaders[shaderIndex].id); GLERR;
     // glfwWaitEventsTimeout(1);
-
     iv_camera_fit(image);
-
     glfwShowWindow(state.window);
 
-    profiler("last mile");
     printf("> profiler: %8.2fms - sum\n", ((float)(clock() - profiler_time_sum) / CLOCKS_PER_SEC)*1000);
+
     double previous = glfwGetTime();
     while (!glfwWindowShouldClose(state.window)) {
         double current = glfwGetTime();
