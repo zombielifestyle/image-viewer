@@ -19,6 +19,10 @@ endif
 # stb
 CFLAGS  += -Ilibs/stb
 
+# webp
+LDFLAGS += libs/libwebp/webp-dist/lib/libwebp.a
+CFLAGS  += -Ilibs/libwebp/webp-dist/include
+
 # libjpeg-turbo
 ifeq ($(TARGET), WIN)
 	LDFLAGS += libs/libjpeg-turbo/build-x86_64-w64-mingw32/libturbojpeg.a

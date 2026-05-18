@@ -1,6 +1,6 @@
 # Image Viewer
 
-Simple image viewer using glfw, GL.
+Simple frameless image viewer using glfw and OpenGL.
 
 Learning Project, may be broken at any time.
 
@@ -25,12 +25,14 @@ Learning Project, may be broken at any time.
  * `F`, `F11`, `LMB` double click: maximize / restore
  * `LEFT` / `RIGHT`: next image
 
-Image formats:
- * jpeg
- * png
+## Supported Image Formats
+ * jpeg (libturbojpeg)
+ * png, tga, bmp, gif, pic, pnm (stbi)
+ * webp (libwebp)
  * more soon (TM)
 
 ## AI Disclosure
 
 I currently don't use coding agents. I use AI chatbots for research, learning and code snippets.
-The presence of AI code is relevant, incompetence of AI as well. Code snippets are refactored / restructured / rewritten to make sense.
+The presence of AI code is relevant, incompetence of AI as well. 
+Code snippets are refactored / restructured / rewritten to make sense.

@@ -47,3 +47,12 @@ cd -
 #./configure --enable-hardware-optimizations=yes
 #make -j$(nproc) CFLAGS=" -g -O3 "
 #cd -
+
+#sudo apt-get install gcc make autoconf automake libtool
+git clone --depth 1 --branch v1.6.0 https://github.com/webmproject/libwebp.git libs/libwebp
+cd libs/libwebp
+./autogen.sh
+./configure --prefix=$(pwd)/webp-dist --disable-shared --enable-static --disable-gl --disable-sdl --disable-png
+make -j$(nproc)
+make install
+cd -

@@ -2,6 +2,7 @@
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 #include <turbojpeg.h>
+#include "webp/decode.h"
 #define STBI_NO_STDIO
 #define STBI_NO_JPEG
 #define STBI_NO_LINEAR
@@ -632,7 +633,7 @@ static int shader_create_default(Shader* s) {
     return 0;
 }
 #if defined(__linux__)
-static int image_map_file_src_into(Image* img, void **buf) {
+static int iv_image_map_file_src_into(Image* img, void **buf) {
     int ret = -1;
     img->fileSize = 0;
 
@@ -660,10 +661,11 @@ static int image_map_file_src_into(Image* img, void **buf) {
 
   cleanup:
     close(fd);
+    profiler("image_map_file_src_into");
     return ret;
 }
 #else
-static int image_open(Image* image, FILE** fileHandle) {
+static int iv_image_open(Image* image, FILE** fileHandle) {
     long size = 0;
     image->fileSize = 0;
 
@@ -687,11 +689,11 @@ static int image_open(Image* image, FILE** fileHandle) {
     return 0;
 }
 
-static int image_map_file_src_into(Image* image, void **buf) {
+static int iv_image_map_file_src_into(Image* image, void **buf) {
     int ret = -1;
     FILE* fileHandle = NULL;
 
-    if (image_open(image, &fileHandle) < 0) {
+    if (iv_image_open(image, &fileHandle) < 0) {
         goto cleanup;
     }
 
@@ -710,12 +712,13 @@ static int image_map_file_src_into(Image* image, void **buf) {
 
   cleanup:
     fclose(fileHandle);
+    profiler("image_map_file_src_into");
     return ret;
 }
 #endif
 
 // https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/src/tjdecomp.c
-static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
+static int iv_image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     int ret = -1, colorspace, jpegPrecision, w, h, pixelFormat = TJPF_RGBA;
     tjhandle tjh = NULL;
 
@@ -766,17 +769,17 @@ static int image_read_jpeg_into(Image* image, void *srcBuf, void *dstBuf) {
     // image->pixelFormatInternal = GL_RGBA;
 
   cleanup:
-#if defined(__linux__)
-    munmap(srcBuf, image->fileSize);
-#else
-    free(srcBuf);
-#endif
     tj3Destroy(tjh);
     return ret;
 }
+static int iv_image_info_stb(Image *img, void *srcBuf) {
+    int ret = stbi_info_from_memory(srcBuf, img->fileSize, &img->width, &img->height, &img->channels);
+    profiler("image_info_stbi");
+    return ret;
+}
 
-static int image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
-    stbi_set_unpremultiply_on_load(1);
+static int iv_image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
+    // stbi_set_unpremultiply_on_load(1);
     int desiredChannels = 4;
     void* tempBuf = stbi_load_from_memory(
         srcBuf, img->fileSize, &img->width, &img->height, &img->channels, desiredChannels
@@ -805,6 +808,56 @@ static int image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
     return 0;
 }
 
+static int iv_image_info_webp(Image *img, void *srcBuf) {
+    int ret = WebPGetInfo(srcBuf, img->fileSize, &img->width, &img->height);
+    profiler("image_info_webp");
+    return ret == 1;
+}
+
+static int iv_image_read_webp_into(Image* img, void *srcBuf, void *dstBuf) {
+    size_t dstBufSize = (size_t)img->width * img->height * 4;
+    uint8_t* tempBuf = WebPDecodeRGBAInto(srcBuf, img->fileSize, dstBuf, dstBufSize, img->width * 4);
+    if (tempBuf == NULL) {
+        return -1;
+        fprintf(stderr, "Error: decoding webp image\n");
+    }
+    profiler("\033[31mimage decompression\033[m");
+
+    return 0;
+}
+
+static int iv_image_load_into(Image *img, void *dstBuf) {
+    int ret = -1;
+    void* srcBuf = NULL;
+    if (iv_image_map_file_src_into(img, &srcBuf) < 0) {
+        return ret;
+    }
+    printf("file: %s size: %ld\n", img->fileName, img->fileSize);
+
+    if (iv_image_is_jpeg(srcBuf, img->fileSize)) {
+        if (iv_image_read_jpeg_into(img, srcBuf, dstBuf) < 0)
+            goto cleanup;
+    } else if (iv_image_info_stb(img, srcBuf)) {
+        if (iv_image_read_stb_into(img, srcBuf, dstBuf) < 0)
+            goto cleanup;
+    } else if (iv_image_info_webp(img, srcBuf)) {
+        if (iv_image_read_webp_into(img, srcBuf, dstBuf) < 0)
+            goto cleanup;
+    } else {
+        fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
+        return -2;
+    }
+    printf("image w:%d h:%d size:%ld \n", img->width, img->height, img->fileSize);
+
+  cleanup:
+#if defined(__linux__)
+    munmap(srcBuf, img->fileSize);
+#else
+    free(srcBuf);
+#endif
+    return 0;
+}
+
 static int image_load_texture(Image* image) {
     unsigned int texture;
     profiler("image_load_texture");
@@ -812,31 +865,13 @@ static int image_load_texture(Image* image) {
     glGenBuffers(1, &pbo); GLERR;
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo); GLERR;
     glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW); GLERR;
-    // void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
-    void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 4000 * 6000 * 4, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT); GLERR;
+    void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY); GLERR;
+    // void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 4000 * 6000 * 4, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT); GLERR;
     profiler("image_load_texture -> map buffers");
 
-    void* srcBuf = NULL;
-    if (image_map_file_src_into(image, &srcBuf) < 0) {
+    if (iv_image_load_into(image, dstBuf) < 0) {
         return -1;
     }
-    profiler("image_map_file_src_into");
-    printf("file: %s size: %ld\n", image->fileName, image->fileSize);
-
-    if (iv_image_is_jpeg(srcBuf, image->fileSize)) {
-        if (image_read_jpeg_into(image, srcBuf, dstBuf) < 0) {
-            return -1;
-        }
-    } else if (stbi_info_from_memory(srcBuf, image->fileSize, &image->width, &image->height, &image->channels)) {
-        if (image_read_stb_into(image, srcBuf, dstBuf) < 0) {
-            return -1;
-        }
-    } else {
-        fprintf(stderr, "ERROR:%d: unknown image type\n", __LINE__);
-    }
-    printf("image w:%d h:%d size:%ld \n", image->width, image->height, image->fileSize);
-    // profiler("image decompression");
-
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER); GLERR;
     profiler("image_load_texture -> unmap buffers");
 
