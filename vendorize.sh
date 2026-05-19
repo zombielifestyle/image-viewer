@@ -24,6 +24,9 @@ cmake .. -D CMAKE_TOOLCHAIN_FILE=./CMake/x86_64-w64-mingw32.cmake -D BUILD_SHARE
 make -j$(nproc)
 cd -
 
+## todo glad
+mkdir libs/glad
+
 ## libjpeg-turbo
 # https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/BUILDING.md
 #sudo apt-get install nasm
