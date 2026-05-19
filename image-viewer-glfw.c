@@ -42,6 +42,7 @@ typedef struct {
     int width;
     int height;
     int channels;
+    int broken;
     unsigned int textureId;
     // GLenum pixelFormat;
     // GLenum pixelFormatInternal;
@@ -81,6 +82,7 @@ struct State {
     int targetFrameRate;
 
     Image *image;
+    Image *brokenImage;
 };
 
 struct State state = {
@@ -319,7 +321,17 @@ static void iv_camera_center(Image* img) {
     state.isDirty = 1;
 }
 
+static void iv_camera_unfit(Image* img) {
+    iv_camera_center(img);
+    state.zoom = 1.0f;
+    state.isFitted = 0;
+}
+
 static void iv_camera_fit(Image* img) {
+    if (img->broken) {
+        iv_camera_unfit(img);
+        return;
+    }
     float windowAspect = (float)state.width / (float)state.height;
     float imageAspect  = (float)img->width  / (float)img->height;
 
@@ -333,12 +345,6 @@ static void iv_camera_fit(Image* img) {
     state.isFitted = 1;
 }
 
-static void iv_camera_unfit(Image* img) {
-    iv_camera_center(img);
-    state.zoom = 1.0f;
-    state.isFitted = 0;
-}
-
 static void iv_error_callback(int error, const char* description) {
     ERROR("%s", description);
 }
@@ -348,7 +354,7 @@ static void iv_cursor_position_callback(GLFWwindow* window, double x, double y) 
 
     if (app->isMovingWindow) {
         iv_win_move(window, x, y);
-    } else if (app->isPanning) {
+    } else if (app->isPanning && !app->image->broken) {
         iv_camera_update_pos(app->image, (float)x, (float)y, (float)app->mouseX, (float)app->mouseY);
     }
 
@@ -366,13 +372,13 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
         iv_win_maximize_toggle(window);
     } else if (key == GLFW_KEY_C && action == GLFW_RELEASE) {
         iv_camera_center(img);
-    } else if (key == GLFW_KEY_R && action == GLFW_RELEASE) {
+    } else if (key == GLFW_KEY_R && action == GLFW_RELEASE && !app->image->broken) {
         if (app->isFitted) {
             iv_camera_unfit(img);
         } else {
             iv_camera_fit(img);
         }
-    } else if (key == GLFW_KEY_S && action == GLFW_RELEASE) {
+    } else if (key == GLFW_KEY_S && action == GLFW_RELEASE && !app->image->broken) {
         shaderIndex = shaderIndex+1 >= len(shaders) ? 0 : shaderIndex + 1;
         glUseProgram(shaders[shaderIndex].id);
         glUniform2f(shaders[shaderIndex].uSize, (float)img->width, (float)img->height);
@@ -380,11 +386,11 @@ static void iv_key_callback(GLFWwindow* window, int key, int scancode, int actio
             glUniform2f(shaders[shaderIndex].uWSize, (float)app->width, (float)app->height);
         }
         app->isDirty = 1;
-    } else if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
+    } else if (key == GLFW_KEY_SPACE && action == GLFW_PRESS && !app->image->broken) {
         glfwGetCursorPos(window, &app->mouseX, &app->mouseY);
         glfwSetCursorPosCallback(window, iv_cursor_position_callback);
         app->isPanning = 1;
-    } else if (key == GLFW_KEY_SPACE && action == GLFW_RELEASE) {
+    } else if (key == GLFW_KEY_SPACE && action == GLFW_RELEASE && !app->image->broken) {
         glfwSetCursorPosCallback(window, NULL);
         app->isPanning = 0;
     } else if ((key == GLFW_KEY_LEFT || key == GLFW_KEY_RIGHT) && action == GLFW_RELEASE) {
@@ -421,8 +427,10 @@ static void iv_mouse_button_callback(GLFWwindow* window, int button, int action,
 static void iv_window_scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     struct State *app = glfwGetWindowUserPointer(window);
 
-    glfwGetCursorPos(window, &app->mouseX, &app->mouseY);
-    iv_camera_update_zoom(app->image, (float)app->mouseX, (float)app->mouseY, yoffset);
+    if (!app->image->broken) {
+        glfwGetCursorPos(window, &app->mouseX, &app->mouseY);
+        iv_camera_update_zoom(app->image, (float)app->mouseX, (float)app->mouseY, yoffset);
+    }
 }
 
 static void iv_window_size_callback(GLFWwindow* window, int width, int height) {
@@ -880,6 +888,13 @@ static int iv_gl_load_texture(Image* img) {
     profiler("iv_gl_load_texture -> map buffers");
 
     if (iv_image_load_into(img, dstBuf) < 0) {
+        img->textureId = state.brokenImage->textureId;
+        img->broken = 1;
+        img->fileSize = state.brokenImage->fileSize;
+        img->width = state.brokenImage->width;
+        img->height = state.brokenImage->height;
+        img->channels = state.brokenImage->channels;
+
         return -1;
     }
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
@@ -937,11 +952,13 @@ static void iv_gl_init_vao() {
 
 static int iv_gl_init(int count, Image* images, Image** img) {
 
+    Image brokenImage = {.fileName = "./broken.png"};
+    state.brokenImage = &brokenImage;
+    iv_gl_load_texture(state.brokenImage);
+
     for (int i = 0; i < count; i++) {
         printf("IMAGE[%d]: %s\n", i, images[i].fileName);
-        if (iv_gl_load_texture(&images[i]) < 0){
-            return -42;
-        }
+        iv_gl_load_texture(&images[i]);
     }
 
     shader_create_default(&shaders[0]);
