@@ -7,6 +7,7 @@
 #define STBI_NO_JPEG
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
+#define STBI_MAX_DIMENSIONS 4000 * 6000
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
 #include <stdio.h>
@@ -20,6 +21,8 @@
 #include <sys/mman.h>
 #endif
 #include <sys/stat.h>
+
+#define IV_PBO_MAX_SIZE 4000 * 6000 * 4
 
 typedef struct {
     unsigned int id;
@@ -787,7 +790,7 @@ static int iv_image_info_stb(Image *img, void *srcBuf) {
 
 static int iv_image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
     // stbi_set_unpremultiply_on_load(1);
-    int desiredChannels = 4;
+    const int desiredChannels = 4;
     void* tempBuf = stbi_load_from_memory(
         srcBuf, img->fileSize, &img->width, &img->height, &img->channels, desiredChannels
     );
@@ -798,7 +801,7 @@ static int iv_image_read_stb_into(Image* img, void *srcBuf, void *dstBuf) {
     }
     profiler("\033[31mimage decompression\033[m");
 
-    if ((img->width + img->height) * desiredChannels > (4000 + 6000) * desiredChannels) {
+    if ((img->width + img->height) * desiredChannels > IV_PBO_MAX_SIZE) {
         ERROR("Image too large '%s'", img->fileName);
         return -1;
     }
@@ -871,9 +874,9 @@ static int iv_gl_load_texture(Image* img) {
 
     glGenBuffers(1, &pbo);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-    glBufferData(GL_PIXEL_UNPACK_BUFFER, 4000 * 6000 * 4, NULL, GL_STREAM_DRAW);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, IV_PBO_MAX_SIZE, NULL, GL_STREAM_DRAW);
     void* dstBuf = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
-    // void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, 4000 * 6000 * 4, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    // void* dstBuf = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, IV_PBO_MAX_SIZE, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     profiler("iv_gl_load_texture -> map buffers");
 
     if (iv_image_load_into(img, dstBuf) < 0) {
@@ -937,7 +940,6 @@ static int iv_gl_init(int count, Image* images, Image** img) {
     for (int i = 0; i < count; i++) {
         printf("IMAGE[%d]: %s\n", i, images[i].fileName);
         if (iv_gl_load_texture(&images[i]) < 0){
-            ERROR("FRESSSE");
             return -42;
         }
     }
